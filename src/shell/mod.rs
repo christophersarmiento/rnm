@@ -8,11 +8,9 @@
 //! that runs `rnm env --json` at startup (see `docs/README.md` decision 11).
 //!
 //! With `--use-on-cd`, the output also installs a hook that runs
-//! `rnm use --from-hook` whenever the nearest `.nvmrc` or `.node-version`
-//! changes. The hook finds that file in shell code, so changing directory
-//! inside a project (or between directories without one) starts no process.
-//! Running the setup code again replaces the hook instead of adding a second
-//! one.
+//! `rnm use --from-hook` after every directory change, like the recipes in
+//! nvm's README. Running the setup code again replaces the hook instead of
+//! adding a second one.
 
 use std::fmt::{self, Write as _};
 

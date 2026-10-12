@@ -110,6 +110,7 @@ impl Fixture {
     std::fs::write(project.join(".nvmrc"), "22 # comment\n").unwrap();
     std::fs::create_dir_all(project.join("old")).unwrap();
     std::fs::write(project.join("old").join(".node-version"), "18\n").unwrap();
+    std::fs::create_dir_all(root.join("plain")).unwrap();
     Self { _tmp: tmp, root }
   }
 
@@ -233,9 +234,11 @@ fn env_and_use_switch_versions() {
 }
 
 /// What [`use_on_cd_script`] prints: `node` after each step, plus the
-/// hook's messages. Leaving the project switches back to `default` (20), a
-/// manual `rnm use` lasts until the version file changes, and re-running the
-/// setup code does not install the hook twice (the last message would repeat).
+/// hook's messages. As in nvm's README recipes, every directory change
+/// applies the nearest version file (a parent's counts), or the `default`
+/// alias (20) without one, so it also undoes a manual `rnm use`. Re-running
+/// the setup code does not install the hook twice (the last message would
+/// repeat).
 const USE_ON_CD_OUTPUT: &str = "\
 v22.20.0
 Now using node v20.19.0
@@ -243,9 +246,12 @@ v20.19.0
 Now using node v22.20.0
 v22.20.0
 v22.20.0
-v20.19.0
+Now using node v22.20.0
+v22.20.0
 Now using node v18.20.4
 v18.20.4
+Now using node v20.19.0
+v20.19.0
 Now using node v20.19.0
 v20.19.0
 Now using node v22.20.0
@@ -253,9 +259,10 @@ v22.20.0
 ";
 
 /// Starts in the project, then: leave it, `cd` back in and run `node` on the
-/// same line, enter a subdirectory, `rnm use 20` and go up within the
-/// project, `pushd` into a directory with its own `.node-version`, leave
-/// the project, set up again, and enter the project.
+/// same line, enter a subdirectory, `rnm use 20` and go up, `pushd` into a
+/// directory with its own `.node-version`, leave the project, `rnm use 18`
+/// and enter a directory without a version file, set up again, and enter
+/// the project.
 fn use_on_cd_script(shell: &Shell) -> String {
   match shell.kind {
     | ShellKind::Bash | ShellKind::Zsh => {
@@ -269,13 +276,15 @@ fn use_on_cd_script(shell: &Shell) -> String {
       format!(
         "cd project\neval \"$(rnm env --shell {name} --use-on-cd)\" || exit 1\nnode\ncd ..\nnode\n\
          cd project && node\ncd sub\nnode\nrnm use 20 >/dev/null\ncd ..\nnode\n{pushd}\nnode\n\
-         cd ../..\nnode\neval \"$(rnm env --shell {name} --use-on-cd)\"\ncd project\nnode\nexit\n",
+         cd ../..\nnode\nrnm use 18 >/dev/null\ncd plain\nnode\n\
+         eval \"$(rnm env --shell {name} --use-on-cd)\"\ncd ../project\nnode\nexit\n",
         name = shell.name
       )
     },
     | ShellKind::Fish => "cd project\nrnm env --shell fish --use-on-cd | source; or exit 1\nnode\ncd ..\nnode\n\
        cd project; and node\ncd sub\nnode\nrnm use 20 >/dev/null\ncd ..\nnode\npushd old\nnode\n\
-       cd ../..\nnode\nrnm env --shell fish --use-on-cd | source\ncd project\nnode\n"
+       cd ../..\nnode\nrnm use 18 >/dev/null\ncd plain\nnode\n\
+       rnm env --shell fish --use-on-cd | source\ncd ../project\nnode\n"
       .to_owned(),
     | ShellKind::Nu => {
       let loader = String::from_utf8(
@@ -297,14 +306,15 @@ fn use_on_cd_script(shell: &Shell) -> String {
            do --env ($hooks | first).code null $env.PWD\n\
          }}\n\
          ^node\ngo ..\n^node\ngo project\n^node\ngo sub\n^node\n^rnm use 20 | ignore\ngo ..\n^node\n\
-         go old\n^node\ngo ../..\n^node\n{loader}\ngo project\n^node\n"
+         go old\n^node\ngo ../..\n^node\n^rnm use 18 | ignore\ngo plain\n^node\n\
+         {loader}\ngo ../project\n^node\n"
       )
     },
     | ShellKind::PowerShell => "$ErrorActionPreference = 'Stop'\nSet-Location project\n\
        rnm env --shell powershell --use-on-cd | Out-String | Invoke-Expression\nnode\nSet-Location ..\nnode\n\
        Set-Location project; node\nSet-Location sub\nnode\nrnm use 20 | Out-Null\nSet-Location ..\nnode\n\
-       Push-Location old\nnode\nSet-Location ../..\nnode\n\
-       rnm env --shell powershell --use-on-cd | Out-String | Invoke-Expression\nSet-Location project\nnode\n"
+       Push-Location old\nnode\nSet-Location ../..\nnode\nrnm use 18 | Out-Null\nSet-Location plain\nnode\n\
+       rnm env --shell powershell --use-on-cd | Out-String | Invoke-Expression\nSet-Location ../project\nnode\n"
       .to_owned(),
   }
 }

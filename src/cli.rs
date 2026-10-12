@@ -105,9 +105,9 @@ pub struct EnvArgs {
   /// Print the environment variables as JSON instead of shell code.
   #[arg(long)]
   pub json: bool,
-  /// Switch versions automatically: use the nearest .nvmrc or
-  /// .node-version now, and again whenever it changes after a directory
-  /// change. Without one, switch back to the `default` alias.
+  /// Switch versions automatically, like nvm's README recipes: after every
+  /// directory change (and now), use the nearest .nvmrc or .node-version,
+  /// in this directory or a parent. Without one, use the `default` alias.
   #[arg(long)]
   pub use_on_cd: bool,
   /// With --use-on-cd: install a missing version instead of reporting it.
