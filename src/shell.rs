@@ -9,7 +9,11 @@
 
 use std::fmt::{self, Write as _};
 
-use crate::sys::Process;
+use crate::sys::{self, Process};
+
+/// How many ancestors to search for the calling shell. Covers wrappers such
+/// as `sudo`, `env`, terminal multiplexers, and IDE launchers.
+const SHELL_SEARCH_DEPTH: usize = 8;
 
 /// A shell rnm can generate code for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, clap::ValueEnum)]
@@ -55,6 +59,28 @@ const UNSUPPORTED: &[&str] = &[
 ];
 
 impl ShellKind {
+  /// Every supported shell.
+  pub const ALL: [Self; 5] = [
+    Self::Bash,
+    Self::Zsh,
+    Self::Fish,
+    Self::Nu,
+    Self::PowerShell,
+  ];
+
+  /// The supported shells' names, for messages: `bash, zsh, fish, nu,
+  /// powershell`.
+  #[must_use]
+  pub fn names() -> String {
+    Self::ALL.map(|shell| shell.to_string()).join(", ")
+  }
+
+  /// Finds the calling shell by walking up the process tree.
+  #[must_use]
+  pub fn detect() -> Inferred {
+    Self::infer(&sys::ancestors(SHELL_SEARCH_DEPTH))
+  }
+
   /// Finds the nearest shell among `ancestors` (nearest first).
   #[must_use]
   pub fn infer(ancestors: &[Process]) -> Inferred {
@@ -189,7 +215,7 @@ pub fn quote_fish(value: &str) -> String {
 #[must_use]
 pub fn quote_powershell(value: &str) -> String {
   if value.is_ascii() {
-    return format!("'{}'", value.replace('\'', "''"));
+    return powershell_ascii_literal(value);
   }
   // Start with '' so `+` is string concatenation even if the first part is a
   // [char].
@@ -201,24 +227,28 @@ pub fn quote_powershell(value: &str) -> String {
       continue;
     }
     if !ascii.is_empty() {
-      parts.push(format!("'{}'", ascii.replace('\'', "''")));
+      parts.push(powershell_ascii_literal(&ascii));
       ascii.clear();
     }
-    let mut units = [0u16; 2];
+    let mut units = [0u16; char::MAX_LEN_UTF16];
     for unit in c.encode_utf16(&mut units) {
       parts.push(format!("[char]0x{unit:04X}"));
     }
   }
   if !ascii.is_empty() {
-    parts.push(format!("'{}'", ascii.replace('\'', "''")));
+    parts.push(powershell_ascii_literal(&ascii));
   }
   format!("({})", parts.join(" + "))
+}
+
+fn powershell_ascii_literal(ascii: &str) -> String {
+  format!("'{}'", ascii.replace('\'', "''"))
 }
 
 /// A JSON string literal.
 #[must_use]
 pub fn quote_json(value: &str) -> String {
-  let mut out = String::with_capacity(value.len() + 2);
+  let mut out = String::with_capacity(value.len());
   out.push('"');
   for c in value.chars() {
     match c {
@@ -227,7 +257,7 @@ pub fn quote_json(value: &str) -> String {
       | '\n' => out.push_str("\\n"),
       | '\r' => out.push_str("\\r"),
       | '\t' => out.push_str("\\t"),
-      | c if u32::from(c) < 0x20 => {
+      | c if c.is_ascii_control() => {
         let _ = write!(out, "\\u{:04x}", u32::from(c));
       },
       | c => out.push(c),

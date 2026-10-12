@@ -2,9 +2,9 @@
 
 use std::io::Write;
 
-use super::{Context, Failure, say};
+use super::{Context, Failure, NONE_LABEL, SYSTEM_LABEL, say};
 use crate::multishell::Target;
-use crate::nvm_dir::NvmDir;
+use crate::nvm_dir::{NODE_EXECUTABLE, version_dir_of};
 
 /// Prints `vX.Y.Z`, `iojs-vX.Y.Z`, `system`, or `none`.
 ///
@@ -28,50 +28,42 @@ pub fn current(ctx: &Context, out: &mut dyn Write) -> Result<(), Failure> {
 pub fn active(ctx: &Context) -> Result<String, Failure> {
   if let Some(session) = &ctx.session {
     match session.target()? {
-      | Some(Target::Version(dir)) => {
-        return Ok(
-          ctx
-            .nvm_dir
-            .installed_at(&dir)
-            .map_or("none".to_owned(), |i| i.to_string()),
-        );
-      },
+      | Some(Target::Version(dir)) => return Ok(label_for_version_dir(ctx, &dir)),
       | Some(Target::System) => {
-        return Ok(
-          if ctx.system_node().is_some() {
-            "system"
-          } else {
-            "none"
-          }
-          .to_owned(),
-        );
+        let label = if ctx.system_node().is_some() {
+          SYSTEM_LABEL
+        } else {
+          NONE_LABEL
+        };
+        return Ok(label.to_owned());
       },
       | None => {},
     }
   }
-  Ok(from_path(ctx, &ctx.nvm_dir))
+  Ok(from_path(ctx))
 }
 
-fn from_path(ctx: &Context, nvm_dir: &NvmDir) -> String {
-  let name = if cfg!(windows) { "node.exe" } else { "node" };
+fn label_for_version_dir(ctx: &Context, dir: &std::path::Path) -> String {
+  ctx
+    .nvm_dir
+    .installed_at(dir)
+    .map_or_else(|| NONE_LABEL.to_owned(), |installed| installed.to_string())
+}
+
+fn from_path(ctx: &Context) -> String {
   let Some(node) = ctx
     .path
     .iter()
-    .map(|dir| dir.join(name))
+    .map(|dir| dir.join(NODE_EXECUTABLE))
     .find(|p| p.is_file())
   else {
-    return "none".to_owned();
+    return NONE_LABEL.to_owned();
   };
-  if !node.starts_with(nvm_dir.root()) {
-    return "system".to_owned();
+  if !node.starts_with(ctx.nvm_dir.root()) {
+    return SYSTEM_LABEL.to_owned();
   }
-  // <version dir>/bin/node on unix, <version dir>/node.exe on Windows.
-  let version_dir = if cfg!(windows) {
-    node.parent()
-  } else {
-    node.parent().and_then(|bin| bin.parent())
-  };
-  version_dir
-    .and_then(|dir| nvm_dir.installed_at(dir))
-    .map_or("none".to_owned(), |i| i.to_string())
+  version_dir_of(&node).map_or_else(
+    || NONE_LABEL.to_owned(),
+    |dir| label_for_version_dir(ctx, dir),
+  )
 }

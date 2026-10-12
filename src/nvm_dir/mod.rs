@@ -23,7 +23,10 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub use alias::{AliasError, Aliases};
-pub use installed::{Flavor, InstalledVersion, bin_dir, is_executable, node_binary};
+pub use installed::{
+  Flavor, InstalledVersion, NODE_EXECUTABLE, bin_dir, global_modules_dir, is_executable,
+  node_binary, version_dir_of,
+};
 pub use resolve::{ResolveError, Resolved};
 
 use crate::version::Version;
@@ -144,7 +147,7 @@ impl NvmDir {
     let name = version.to_string();
     match flavor {
       | Flavor::Iojs => self.iojs_versions_dir().join(name),
-      | Flavor::Node if (version.major, version.minor) < (0, 12) => self.root.join(name),
+      | Flavor::Node if version.uses_legacy_layout() => self.root.join(name),
       | Flavor::Node => self.node_versions_dir().join(name),
     }
   }
@@ -161,7 +164,9 @@ fn strip_trailing_separators(path: PathBuf) -> PathBuf {
   let text = path.to_string_lossy();
   let is_separator = |c: char| std::path::is_separator(c);
   let trimmed = text.trim_end_matches(is_separator);
-  if trimmed.len() == text.len() || trimmed.is_empty() || trimmed.ends_with(':') {
+  let nothing_to_strip = trimmed.len() == text.len();
+  let is_filesystem_root = trimmed.is_empty() || trimmed.ends_with(':');
+  if nothing_to_strip || is_filesystem_root {
     return path;
   }
   PathBuf::from(trimmed)

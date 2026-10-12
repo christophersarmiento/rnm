@@ -9,6 +9,16 @@ use std::str::FromStr;
 
 use super::exact::{ParseVersionError, Version, parse_number};
 
+/// The prefix of LTS specs and alias names: `lts/*`, `lts/iron`.
+pub const LTS_PREFIX: &str = "lts/";
+
+/// The LTS name that means "newest LTS line" (`lts/*`), and the name of the
+/// alias file nvm keeps for it.
+pub const LATEST_LTS: &str = "*";
+
+/// The prefix of io.js version specs: `iojs-v3.3.1`.
+pub const IOJS_PREFIX: &str = "iojs-";
+
 /// A version requirement written with digits: `18`, `v18.1`, `18.1.0`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum VersionReq {
@@ -168,10 +178,10 @@ impl FromStr for VersionSpec {
       | _ => {},
     }
 
-    if let Some(rest) = input.strip_prefix("lts/") {
+    if let Some(rest) = input.strip_prefix(LTS_PREFIX) {
       return parse_lts(input, rest).map(Self::Lts);
     }
-    if let Some(rest) = input.strip_prefix("iojs-") {
+    if let Some(rest) = input.strip_prefix(IOJS_PREFIX) {
       return rest
         .parse()
         .map(|req| Self::Iojs(Some(req)))
@@ -191,7 +201,7 @@ impl FromStr for VersionSpec {
 }
 
 fn parse_lts(input: &str, rest: &str) -> Result<LtsSpec, SpecError> {
-  if rest == "*" {
+  if rest == LATEST_LTS {
     return Ok(LtsSpec::Latest);
   }
   if let Some(digits) = rest.strip_prefix('-') {
@@ -218,17 +228,21 @@ fn looks_like_version(input: &str) -> bool {
   body.bytes().next().is_some_and(|b| b.is_ascii_digit())
 }
 
-/// Alias names become file names under `alias/`, so they must be safe path
-/// components: non-empty, not `.` or `..`, and free of path separators,
-/// whitespace, control characters, and `#` (which starts a comment in alias
-/// files and `.nvmrc`).
+/// Alias names become file names under `alias/`, so they must be one safe
+/// path component. `#` is also excluded because it starts a comment in alias
+/// files and `.nvmrc`.
 fn is_valid_alias_name(name: &str) -> bool {
-  !name.is_empty()
-    && name != "."
-    && name != ".."
-    && !name
-      .chars()
-      .any(|c| c == '/' || c == '\\' || c == '#' || c.is_whitespace() || c.is_control())
+  is_valid_alias_component(name) && !name.contains('/')
+}
+
+/// One `/`-separated part of an alias name (`lts/iron` has two): non-empty,
+/// not `.` or `..`, and without separators, whitespace, control characters,
+/// or `#`.
+#[must_use]
+pub fn is_valid_alias_component(component: &str) -> bool {
+  let is_forbidden = |c: char| c == '\\' || c == '#' || c.is_whitespace() || c.is_control();
+  let is_relative_marker = component == "." || component == "..";
+  !component.is_empty() && !is_relative_marker && !component.contains(is_forbidden)
 }
 
 impl fmt::Display for VersionSpec {
@@ -239,12 +253,12 @@ impl fmt::Display for VersionSpec {
       | Self::Stable => f.write_str("stable"),
       | Self::Unstable => f.write_str("unstable"),
       | Self::Iojs(None) => f.write_str("iojs"),
-      | Self::Iojs(Some(req)) => write!(f, "iojs-{req}"),
+      | Self::Iojs(Some(req)) => write!(f, "{IOJS_PREFIX}{req}"),
       | Self::System => f.write_str("system"),
       | Self::Current => f.write_str("current"),
-      | Self::Lts(LtsSpec::Latest) => f.write_str("lts/*"),
-      | Self::Lts(LtsSpec::Offset(n)) => write!(f, "lts/-{n}"),
-      | Self::Lts(LtsSpec::Named(name)) => write!(f, "lts/{name}"),
+      | Self::Lts(LtsSpec::Latest) => write!(f, "{LTS_PREFIX}{LATEST_LTS}"),
+      | Self::Lts(LtsSpec::Offset(n)) => write!(f, "{LTS_PREFIX}-{n}"),
+      | Self::Lts(LtsSpec::Named(name)) => write!(f, "{LTS_PREFIX}{name}"),
       | Self::Alias(name) => f.write_str(name),
     }
   }

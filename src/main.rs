@@ -21,7 +21,7 @@ fn main() -> ExitCode {
     | Ok(()) => ExitCode::SUCCESS,
     | Err(failure) => {
       let _ = writeln!(std::io::stderr(), "{}", failure.message);
-      ExitCode::from(u8::try_from(failure.code).unwrap_or(1))
+      ExitCode::from(failure.code)
     },
   }
 }

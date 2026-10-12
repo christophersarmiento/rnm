@@ -247,7 +247,6 @@ fn quoting_round_trips() {
         },
       };
       let got = fixture.run(shell, &script);
-      // PowerShell on Windows would turn \n into \r\n; on unix it is exact.
       assert_eq!(got, *value, "{} mangled {value:?}", shell.name);
     }
   }

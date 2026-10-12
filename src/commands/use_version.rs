@@ -3,19 +3,19 @@
 use std::io::Write;
 use std::path::Path;
 
-use super::{Context, Failure, exit, npm_version, say};
+use super::{Context, Failure, SYSTEM_LABEL, exit, npm_version, say};
 use crate::multishell::Target;
 use crate::nvm_dir::{InstalledVersion, ResolveError, Resolved};
 use crate::shell::{Inferred, ShellKind};
-use crate::sys;
-use crate::version::{VersionFile, VersionFileKind, VersionSpec, find_version_file};
+use crate::version::{LTS_PREFIX, VersionFile, VersionFileKind, VersionSpec, find_version_file};
 
 /// Options for [`use_version`].
 #[derive(Clone, Debug, Default)]
 pub struct UseOptions {
   /// The version spec. When `None`, the nearest version file is used.
   pub version: Option<String>,
-  /// `--lts[=name]`: `Some("*")` for the newest LTS.
+  /// `--lts[=name]`: an LTS codename, or [`crate::version::LATEST_LTS`] for
+  /// the newest LTS.
   pub lts: Option<String>,
   /// `--silent`: print nothing on success.
   pub silent: bool,
@@ -34,7 +34,7 @@ pub struct UseOptions {
 /// not set up in this shell.
 pub fn use_version(ctx: &Context, opts: &UseOptions, out: &mut dyn Write) -> Result<(), Failure> {
   let spec_text = match (&opts.lts, &opts.version) {
-    | (Some(lts), _) => format!("lts/{lts}"),
+    | (Some(lts), _) => format!("{LTS_PREFIX}{lts}"),
     | (None, Some(version)) => version.clone(),
     | (None, None) => {
       let file = version_file(ctx)?;
@@ -62,13 +62,16 @@ pub fn use_version(ctx: &Context, opts: &UseOptions, out: &mut dyn Write) -> Res
     .map_err(|e| resolve_failure(&spec, &e))?;
   let current = session.target()?;
 
-  let (message, saved) = match resolved {
+  let switched = match resolved {
     | Resolved::Installed(installed) => {
       let unchanged = current == Some(Target::Version(installed.path.clone()));
       session.point_to(Some(&installed.path))?;
       update_current_symlink(ctx, &installed.path);
-      let message = (!(opts.silent_if_unchanged && unchanged)).then(|| now_using(&installed));
-      (message, installed.to_string())
+      Some(Switched {
+        unchanged,
+        message: now_using(&installed),
+        saved: installed.to_string(),
+      })
     },
     | Resolved::System => {
       if ctx.system_node().is_none() {
@@ -79,22 +82,38 @@ pub fn use_version(ctx: &Context, opts: &UseOptions, out: &mut dyn Write) -> Res
       }
       let unchanged = current == Some(Target::System);
       session.point_to(None)?;
-      let message = (!(opts.silent_if_unchanged && unchanged))
-        .then(|| "Now using system version of node.".to_owned());
-      (message, "system".to_owned())
+      Some(Switched {
+        unchanged,
+        message: "Now using system version of node.".to_owned(),
+        saved: SYSTEM_LABEL.to_owned(),
+      })
     },
-    | Resolved::Current => (None, String::new()),
+    | Resolved::Current => None,
   };
 
-  if let Some(message) = message
-    && !opts.silent
-  {
-    say(out, message);
+  let Some(switched) = switched else {
+    return Ok(());
+  };
+  let quiet = opts.silent || (opts.silent_if_unchanged && switched.unchanged);
+  if !quiet {
+    say(out, &switched.message);
   }
-  if opts.save && !saved.is_empty() {
-    std::fs::write(ctx.cwd.join(".nvmrc"), format!("{saved}\n"))?;
+  if opts.save {
+    std::fs::write(
+      ctx.cwd.join(VersionFileKind::Nvmrc.file_name()),
+      format!("{}\n", switched.saved),
+    )?;
   }
   Ok(())
+}
+
+/// The outcome of re-pointing the session link.
+struct Switched {
+  /// The link already pointed there.
+  unchanged: bool,
+  message: String,
+  /// What `--save` writes to `.nvmrc`.
+  saved: String,
 }
 
 /// The nearest `.nvmrc` or `.node-version`, parsed.
@@ -131,22 +150,15 @@ fn resolve_failure(spec: &VersionSpec, e: &ResolveError) -> Failure {
 }
 
 fn not_set_up() -> Failure {
-  let hint = match ShellKind::infer(&sys::ancestors(8)) {
+  let hint = match ShellKind::detect() {
     | Inferred::Supported(shell) => format!("\n\n  {}", shell.setup_hint()),
-    | _ => {
-      let all = [
-        ShellKind::Bash,
-        ShellKind::Zsh,
-        ShellKind::Fish,
-        ShellKind::Nu,
-        ShellKind::PowerShell,
-      ];
-      all.iter().fold(String::new(), |mut hint, shell| {
+    | _ => ShellKind::ALL
+      .iter()
+      .fold(String::new(), |mut hint, shell| {
         hint.push_str("\n  ");
         hint.push_str(shell.setup_hint());
         hint
-      })
-    },
+      }),
   };
   Failure::new(
     exit::ERROR,
@@ -161,17 +173,7 @@ fn not_set_up() -> Failure {
 fn update_current_symlink(ctx: &Context, version_dir: &Path) {
   #[cfg(unix)]
   if ctx.var("NVM_SYMLINK_CURRENT").is_some_and(|v| v == "true") {
-    let link = ctx.nvm_dir.root().join("current");
-    let tmp = ctx
-      .nvm_dir
-      .root()
-      .join(format!(".current.tmp-{}", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
-    if std::os::unix::fs::symlink(version_dir, &tmp).is_ok()
-      && std::fs::rename(&tmp, &link).is_err()
-    {
-      let _ = std::fs::remove_file(&tmp);
-    }
+    let _ = crate::fs::replace_symlink(version_dir, &ctx.nvm_dir.root().join("current"));
   }
   #[cfg(not(unix))]
   let _ = (ctx, version_dir);

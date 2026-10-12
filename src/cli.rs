@@ -4,6 +4,7 @@
 
 use clap::{Parser, Subcommand};
 use rnm::shell::ShellKind;
+use rnm::version::LATEST_LTS;
 
 #[derive(Debug, Parser)]
 #[command(name = "rnm", version, about, propagate_version = true)]
@@ -37,7 +38,7 @@ pub enum Command {
     #[arg(value_name = "VERSION")]
     spec: Option<String>,
     /// Use the newest LTS, or the named LTS line with --lts=<name>.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "*", value_name = "NAME")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = LATEST_LTS, value_name = "NAME")]
     lts: Option<String>,
     /// Print nothing on success.
     #[arg(long)]
