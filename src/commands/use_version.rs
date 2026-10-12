@@ -117,7 +117,7 @@ struct Switched {
 }
 
 /// The nearest `.nvmrc` or `.node-version`, parsed.
-fn version_file(ctx: &Context) -> Result<VersionFile, Failure> {
+pub(crate) fn version_file(ctx: &Context) -> Result<VersionFile, Failure> {
   let (path, kind) = find_version_file(&ctx.cwd, VersionFileKind::DEFAULT).ok_or_else(|| {
     Failure::new(
       exit::NO_VERSION,

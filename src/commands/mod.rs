@@ -5,7 +5,9 @@
 mod colors;
 mod current;
 mod env;
+mod install;
 mod ls_remote;
+mod uninstall;
 mod use_version;
 
 use std::ffi::OsString;
@@ -15,7 +17,9 @@ use std::path::{Path, PathBuf};
 
 pub use current::current;
 pub use env::env;
+pub use install::{InstallOptions, Progress, install};
 pub use ls_remote::{LsRemoteOptions, ls_remote};
+pub use uninstall::uninstall;
 pub use use_version::{UseOptions, use_version};
 
 use crate::http::{Client, Mirror};
@@ -25,6 +29,9 @@ use crate::remote::{RemoteIndex, load_index, refresh_lts_aliases};
 
 /// What nvm prints for "no version is active".
 pub const NONE_LABEL: &str = "none";
+
+/// The alias a new shell session starts with.
+pub const DEFAULT_ALIAS: &str = "default";
 
 /// What nvm prints for a Node.js found outside its tree.
 pub const SYSTEM_LABEL: &str = "system";

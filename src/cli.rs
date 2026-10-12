@@ -54,6 +54,50 @@ pub enum Command {
   /// Print the active version.
   Current,
 
+  /// Download and install a version, then switch this shell to it.
+  ///
+  /// Without a version, installs the one in the nearest .nvmrc or
+  /// .node-version. The first install also creates the `default` alias.
+  #[command(alias = "i")]
+  Install {
+    /// A version (18, v20.11.1), lts/*, lts/<name>, or node.
+    #[arg(value_name = "VERSION")]
+    spec: Option<String>,
+    /// Install the newest LTS, or the named LTS line with --lts=<name>.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = LATEST_LTS, value_name = "NAME")]
+    lts: Option<String>,
+    /// Point the `default` alias at the requested version.
+    #[arg(long, conflicts_with = "alias")]
+    default: bool,
+    /// Point this alias at the requested version.
+    #[arg(long, require_equals = true, value_name = "NAME")]
+    alias: Option<String>,
+    /// Write the installed version to ./.nvmrc.
+    #[arg(long, short = 'w')]
+    save: bool,
+    /// Do not switch this shell to the installed version.
+    #[arg(long)]
+    no_use: bool,
+    /// Do not draw a download progress bar.
+    #[arg(long)]
+    no_progress: bool,
+    /// nvm's "binary only" flag. rnm always installs binaries, so it has no
+    /// effect.
+    #[arg(short = 'b', hide = true)]
+    binary_only: bool,
+  },
+
+  /// Remove an installed version and the aliases that point at it.
+  Uninstall {
+    /// A version, alias, lts/*, or lts/<name>, resolved among installed
+    /// versions.
+    #[arg(value_name = "VERSION", required_unless_present = "lts")]
+    spec: Option<String>,
+    /// Remove the newest installed LTS, or the named line with --lts=<name>.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = LATEST_LTS, value_name = "NAME", conflicts_with = "spec")]
+    lts: Option<String>,
+  },
+
   /// List the versions available on the mirror.
   ///
   /// Also refreshes the LTS aliases (lts/*, lts/<name>) that `use` reads.

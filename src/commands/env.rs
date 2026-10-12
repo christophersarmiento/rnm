@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::{Context, Failure, exit, say};
+use super::{Context, DEFAULT_ALIAS, Failure, exit, say};
 use crate::multishell::{self, Session};
 use crate::nvm_dir::Resolved;
 use crate::shell::{EnvPlan, Inferred, ShellKind};
@@ -15,9 +15,6 @@ const NVM_BIN: &str = "NVM_BIN";
 
 /// nvm's variable for the active version's headers (`include/node`).
 const NVM_INC: &str = "NVM_INC";
-
-/// The alias a new shell session starts with.
-const DEFAULT_ALIAS: &str = "default";
 
 /// Enough ancestors to see the shell and, when `rnm env` runs inside `$(…)`,
 /// the subshell in front of it. See [`owner_pid`].

@@ -6,7 +6,9 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
-use rnm::commands::{self, Context, Failure, LsRemoteOptions, UseOptions};
+use rnm::commands::{
+  self, Context, Failure, InstallOptions, LsRemoteOptions, Progress, UseOptions,
+};
 
 use crate::cli::{Cli, Command};
 
@@ -53,6 +55,38 @@ fn run(command: Command) -> Result<(), Failure> {
       commands::use_version(&ctx, &opts, &mut out)
     },
     | Command::Current => commands::current(&ctx, &mut out),
+    | Command::Install {
+      spec,
+      lts,
+      default,
+      alias,
+      save,
+      no_use,
+      no_progress,
+      binary_only: _,
+    } => {
+      let opts = InstallOptions {
+        version: spec,
+        lts,
+        default,
+        alias,
+        save,
+        no_use,
+        progress: if no_progress || !std::io::stderr().is_terminal() {
+          Progress::Hidden
+        } else {
+          Progress::Bar
+        },
+      };
+      commands::install(&ctx, &opts, &mut out, &mut std::io::stderr())
+    },
+    | Command::Uninstall { spec, lts } => commands::uninstall(
+      &ctx,
+      spec.as_deref(),
+      lts.as_deref(),
+      &mut out,
+      &mut std::io::stderr(),
+    ),
     | Command::LsRemote {
       pattern,
       lts,
