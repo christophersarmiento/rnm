@@ -105,6 +105,10 @@ pub enum Command {
 }
 
 #[derive(Debug, Args)]
+#[allow(
+  clippy::struct_excessive_bools,
+  reason = "each bool is one command-line flag"
+)]
 pub struct UseArgs {
   /// A version (18, v20.11.1), lts/*, lts/<name>, node, system, or an
   /// alias.
@@ -122,6 +126,10 @@ pub struct UseArgs {
   /// Write the version to ./.nvmrc.
   #[arg(long, short = 'w')]
   pub save: bool,
+  /// Run by the `env --use-on-cd` hook: without a version file, switch to
+  /// the `default` alias if there is one.
+  #[arg(long, hide = true, conflicts_with_all = ["spec", "lts", "save"])]
+  pub from_hook: bool,
 }
 
 #[derive(Debug, Args)]
@@ -211,6 +219,7 @@ impl From<UseArgs> for UseOptions {
       silent: args.silent,
       silent_if_unchanged: args.silent_if_unchanged,
       save: args.save,
+      from_hook: args.from_hook,
     }
   }
 }
