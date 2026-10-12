@@ -105,3 +105,8 @@ pub fn is_alive(pid: u32) -> bool {
     ok != 0 && i32::try_from(code).is_ok_and(|code| code == STILL_ACTIVE)
   }
 }
+
+/// x64 emulation on Windows on Arm is not detected yet.
+pub fn is_translated() -> bool {
+  false
+}

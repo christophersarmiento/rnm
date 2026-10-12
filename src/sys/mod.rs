@@ -1,4 +1,5 @@
-//! Small, dependency-light platform helpers: process ancestry and liveness.
+//! Small, dependency-light platform helpers: process ancestry, liveness,
+//! and binary translation.
 //!
 //! No subprocesses and no `sysinfo`: Linux reads `/proc`, macOS calls
 //! `proc_pidinfo`, Windows takes one Toolhelp snapshot. Other unix systems
@@ -49,6 +50,14 @@ pub fn parent_pid() -> Option<u32> {
 #[must_use]
 pub fn is_alive(pid: u32) -> bool {
   imp::is_alive(pid)
+}
+
+/// Returns `true` if this process is an x64 build running under binary
+/// translation (Rosetta 2 on Apple Silicon), where native arm64 Node.js
+/// would run faster.
+#[must_use]
+pub fn is_translated() -> bool {
+  imp::is_translated()
 }
 
 #[cfg(test)]
