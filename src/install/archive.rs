@@ -130,6 +130,23 @@ mod tests {
     );
   }
 
+  #[cfg(unix)]
+  #[test]
+  fn unpacks_tar_xz() {
+    let tmp = tempfile::tempdir().unwrap();
+    let archive = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny.tar.xz");
+    unpack(ArchiveKind::TarXz, &archive, tmp.path()).unwrap();
+    assert_eq!(
+      std::fs::read(tmp.path().join("top/bin/node")).unwrap(),
+      b"node"
+    );
+    assert!(
+      std::fs::symlink_metadata(tmp.path().join("top/bin/npm"))
+        .unwrap()
+        .is_symlink()
+    );
+  }
+
   #[test]
   fn rejects_corrupt_archives() {
     let tmp = tempfile::tempdir().unwrap();

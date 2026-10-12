@@ -346,7 +346,7 @@ impl Installer<'_> {
     let result = archive::unpack(chosen.kind, archive, &staging)
       .map_err(|e| InstallError::BadArchive {
         path: archive.to_path_buf(),
-        reason: e.to_string(),
+        reason: with_causes(&e),
       })
       .and_then(|()| single_top_dir(&staging, archive))
       .and_then(|top| {
@@ -383,6 +383,22 @@ pub fn remove_dir_safely(dir: &Path) -> Result<(), InstallError> {
   let doomed = parent.join(format!("{REMOVING_PREFIX}{name}-{}", std::process::id()));
   std::fs::rename(dir, &doomed).map_err(io_error(dir))?;
   std::fs::remove_dir_all(&doomed).map_err(io_error(&doomed))
+}
+
+/// The error and its causes, so the root cause (such as "No space left on
+/// device") is not hidden behind the archive library's summary.
+fn with_causes(error: &dyn std::error::Error) -> String {
+  let mut text = error.to_string();
+  let mut source = error.source();
+  while let Some(cause) = source {
+    let cause_text = cause.to_string();
+    if !text.contains(&cause_text) {
+      text.push_str(": ");
+      text.push_str(&cause_text);
+    }
+    source = cause.source();
+  }
+  text
 }
 
 /// Deletes work directories named `<prefix>*` left by interrupted runs.
@@ -457,6 +473,31 @@ mod tests {
       digest.to_string(),
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
+  }
+
+  #[test]
+  fn shows_root_causes() {
+    let root = io::Error::new(io::ErrorKind::StorageFull, "No space left on device");
+    let outer = io::Error::new(io::ErrorKind::StorageFull, Wrapped(root));
+    assert_eq!(
+      with_causes(&outer),
+      "failed to unpack bin/node: No space left on device"
+    );
+  }
+
+  #[derive(Debug)]
+  struct Wrapped(io::Error);
+
+  impl fmt::Display for Wrapped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      f.write_str("failed to unpack bin/node")
+    }
+  }
+
+  impl std::error::Error for Wrapped {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+      Some(&self.0)
+    }
   }
 
   #[test]
