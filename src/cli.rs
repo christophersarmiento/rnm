@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use rnm::commands::{
   EnvOptions, ExecOptions, InstallOptions, LsOptions, LsRemoteOptions, Progress, UseOptions,
 };
-use rnm::shell::ShellKind;
+use rnm::shell::{CdHook, ShellKind};
 use rnm::version::LATEST_LTS;
 
 #[derive(Debug, Parser)]
@@ -110,6 +110,9 @@ pub struct EnvArgs {
   /// change. Without one, switch back to the `default` alias.
   #[arg(long)]
   pub use_on_cd: bool,
+  /// With --use-on-cd: install a missing version instead of reporting it.
+  #[arg(long, requires = "use_on_cd")]
+  pub install_if_missing: bool,
 }
 
 #[derive(Debug, Args)]
@@ -134,6 +137,9 @@ pub struct UseArgs {
   /// Write the version to ./.nvmrc.
   #[arg(long, short = 'w')]
   pub save: bool,
+  /// Install the version first if it is not installed.
+  #[arg(long)]
+  pub install_if_missing: bool,
   /// Run by the `env --use-on-cd` hook: without a version file, switch to
   /// the `default` alias if there is one.
   #[arg(long, hide = true, conflicts_with_all = ["spec", "lts", "save"])]
@@ -219,12 +225,24 @@ pub struct LsRemoteArgs {
   pub no_colors: bool,
 }
 
+/// A progress bar when stderr is a terminal, unless `--no-progress`.
+fn progress(no_progress: bool) -> Progress {
+  if !no_progress && std::io::stderr().is_terminal() {
+    Progress::Bar
+  } else {
+    Progress::Hidden
+  }
+}
+
 impl From<EnvArgs> for EnvOptions {
   fn from(args: EnvArgs) -> Self {
     Self {
       shell: args.shell,
       json: args.json,
-      use_on_cd: args.use_on_cd,
+      use_on_cd: args.use_on_cd.then_some(CdHook {
+        install_if_missing: args.install_if_missing,
+      }),
+      progress: progress(false),
     }
   }
 }
@@ -238,13 +256,14 @@ impl From<UseArgs> for UseOptions {
       silent_if_unchanged: args.silent_if_unchanged,
       save: args.save,
       from_hook: args.from_hook,
+      install_if_missing: args.install_if_missing,
+      progress: progress(false),
     }
   }
 }
 
 impl From<InstallArgs> for InstallOptions {
   fn from(args: InstallArgs) -> Self {
-    let draws_bar = !args.no_progress && std::io::stderr().is_terminal();
     Self {
       version: args.spec,
       lts: args.lts,
@@ -252,11 +271,7 @@ impl From<InstallArgs> for InstallOptions {
       alias: args.alias,
       save: args.save,
       no_use: args.no_use,
-      progress: if draws_bar {
-        Progress::Bar
-      } else {
-        Progress::Hidden
-      },
+      progress: progress(args.no_progress),
     }
   }
 }

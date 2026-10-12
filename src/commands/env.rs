@@ -3,11 +3,12 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use super::install::Progress;
 use super::use_version::{UseOptions, requested_spec, switch_session};
 use super::{Context, DEFAULT_ALIAS, Failure, exit, say};
 use crate::multishell::{self, Session};
 use crate::nvm_dir::Resolved;
-use crate::shell::{EnvPlan, Inferred, ShellKind};
+use crate::shell::{CdHook, EnvPlan, Inferred, ShellKind};
 use crate::sys;
 use crate::version::VersionSpec;
 
@@ -30,8 +31,10 @@ pub struct EnvOptions {
   /// `--json`: print the variables as JSON instead of shell code.
   pub json: bool,
   /// `--use-on-cd`: switch to the nearest version file's version now, and
-  /// install a hook that does it again whenever that file changes.
-  pub use_on_cd: bool,
+  /// install a hook that does it again after every directory change.
+  pub use_on_cd: Option<CdHook>,
+  /// Download progress output when the hook installs a version at startup.
+  pub progress: Progress,
 }
 
 /// Prints the shell code (or JSON) that puts this session's link on `PATH`.
@@ -83,8 +86,9 @@ pub fn env(
       .create(owner, default_target(ctx, err).as_deref())?,
   };
 
-  if opts.use_on_cd {
-    use_version_file(ctx, &session, err);
+  if let Some(cd_hook) = opts.use_on_cd {
+    let hook = UseOptions::hook(cd_hook.install_if_missing, opts.progress);
+    use_version_file(ctx, &session, &hook, err);
   }
 
   let bin = session.bin_dir();
@@ -113,12 +117,13 @@ pub fn env(
 
 /// Does what the `--use-on-cd` hook would do in this directory. Messages go
 /// to `err`, because `out` is evaluated by the shell.
-fn use_version_file(ctx: &Context, session: &Session, err: &mut dyn Write) {
-  let hook = UseOptions::hook();
-  let result = requested_spec(ctx, &hook, err).and_then(|spec| match spec {
-    | Some(spec) => switch_session(ctx, session, &spec, &hook, err),
+fn use_version_file(ctx: &Context, session: &Session, hook: &UseOptions, err: &mut dyn Write) {
+  let mut messages = Vec::new();
+  let result = requested_spec(ctx, hook, err).and_then(|spec| match spec {
+    | Some(spec) => switch_session(ctx, session, &spec, hook, &mut messages, err),
     | None => Ok(()),
   });
+  let _ = err.write_all(&messages);
   if let Err(failure) = result {
     say(err, failure.message);
   }

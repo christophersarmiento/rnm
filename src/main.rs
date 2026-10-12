@@ -35,7 +35,7 @@ fn run(command: Command) -> Result<(), Failure> {
   let mut err = std::io::stderr();
   match command {
     | Command::Env(args) => commands::env(&ctx, &args.into(), &mut out, &mut err),
-    | Command::Use(args) => commands::use_version(&ctx, &args.into(), &mut out),
+    | Command::Use(args) => commands::use_version(&ctx, &args.into(), &mut out, &mut err),
     | Command::Current => commands::current(&ctx, &mut out),
     | Command::Install(args) => commands::install(&ctx, &args.into(), &mut out, &mut err),
     | Command::Uninstall { spec, lts } => {
