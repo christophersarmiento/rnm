@@ -48,8 +48,8 @@ fn info(pid: u32) -> Option<(u32, String)> {
   let name = stat.get(open + 1..close)?.to_owned();
   let mut fields = stat.get(close + 1..)?.split_ascii_whitespace();
   let _state = fields.next()?;
-  let ppid = fields.next()?.parse().ok()?;
-  Some((ppid, name))
+  let parent = fields.next()?.parse().ok()?;
+  Some((parent, name))
 }
 
 #[cfg(target_os = "macos")]
