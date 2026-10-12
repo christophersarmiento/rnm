@@ -45,6 +45,9 @@ pub struct Response {
   pub url: Url,
   /// The `ETag` header, for conditional requests.
   pub etag: Option<String>,
+  /// The `Content-Length` header, for progress reporting only: for a
+  /// compressed response it counts compressed bytes, not body bytes.
+  pub content_length: Option<u64>,
   /// The body. It is not size-limited; callers decide how much to read.
   pub body: Box<dyn Read + Send>,
 }
@@ -233,6 +236,8 @@ impl Client {
         }),
         | _ => Ok(Conditional::Modified(Response {
           etag: header_text(&response, header::ETAG),
+          content_length: header_text(&response, header::CONTENT_LENGTH)
+            .and_then(|length| length.parse().ok()),
           body: Box::new(response.into_body().into_reader()),
           url,
         })),
