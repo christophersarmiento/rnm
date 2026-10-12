@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand};
 use std::io::IsTerminal;
 
 use rnm::commands::{
-  ExecOptions, InstallOptions, LsOptions, LsRemoteOptions, Progress, UseOptions,
+  EnvOptions, ExecOptions, InstallOptions, LsOptions, LsRemoteOptions, Progress, UseOptions,
 };
 use rnm::shell::ShellKind;
 use rnm::version::LATEST_LTS;
@@ -24,15 +24,7 @@ pub enum Command {
   ///
   /// Add the output to your shell's startup file, for example
   /// `eval "$(rnm env --shell bash)"` in ~/.bashrc.
-  Env {
-    /// The shell to generate code for. Detected from the parent process
-    /// when omitted.
-    #[arg(long, value_enum)]
-    shell: Option<ShellKind>,
-    /// Print the environment variables as JSON instead of shell code.
-    #[arg(long)]
-    json: bool,
-  },
+  Env(EnvArgs),
 
   /// Switch this shell to an installed version.
   ///
@@ -102,6 +94,22 @@ pub enum Command {
   /// Also refreshes the LTS aliases (lts/*, lts/<name>) that `use` reads.
   #[command(alias = "list-remote")]
   LsRemote(LsRemoteArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct EnvArgs {
+  /// The shell to generate code for. Detected from the parent process
+  /// when omitted.
+  #[arg(long, value_enum)]
+  pub shell: Option<ShellKind>,
+  /// Print the environment variables as JSON instead of shell code.
+  #[arg(long)]
+  pub json: bool,
+  /// Switch versions automatically: use the nearest .nvmrc or
+  /// .node-version now, and again whenever it changes after a directory
+  /// change. Without one, switch back to the `default` alias.
+  #[arg(long)]
+  pub use_on_cd: bool,
 }
 
 #[derive(Debug, Args)]
@@ -209,6 +217,16 @@ pub struct LsRemoteArgs {
   /// Never color the output.
   #[arg(long)]
   pub no_colors: bool,
+}
+
+impl From<EnvArgs> for EnvOptions {
+  fn from(args: EnvArgs) -> Self {
+    Self {
+      shell: args.shell,
+      json: args.json,
+      use_on_cd: args.use_on_cd,
+    }
+  }
 }
 
 impl From<UseArgs> for UseOptions {

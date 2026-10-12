@@ -34,7 +34,7 @@ fn run(command: Command) -> Result<(), Failure> {
   let mut out = stdout.lock();
   let mut err = std::io::stderr();
   match command {
-    | Command::Env { shell, json } => commands::env(&ctx, shell, json, &mut out, &mut err),
+    | Command::Env(args) => commands::env(&ctx, &args.into(), &mut out, &mut err),
     | Command::Use(args) => commands::use_version(&ctx, &args.into(), &mut out),
     | Command::Current => commands::current(&ctx, &mut out),
     | Command::Install(args) => commands::install(&ctx, &args.into(), &mut out, &mut err),

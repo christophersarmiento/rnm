@@ -226,6 +226,7 @@ fn quoting_round_trips() {
       let plan = EnvPlan {
         path_prepend: Vec::new(),
         set: vec![("RNM_T".to_owned(), (*value).to_owned())],
+        use_on_cd: false,
       };
       let script = match shell.kind {
         | ShellKind::Bash | ShellKind::Zsh | ShellKind::Fish => {
