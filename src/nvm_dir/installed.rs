@@ -59,10 +59,16 @@ pub fn node_binary(version_dir: &Path) -> PathBuf {
   bin_dir(version_dir).join(if cfg!(windows) { "node.exe" } else { "node" })
 }
 
-/// nvm's installed check (`[ -x "$dir/bin/node" ]`): the binary exists and is
-/// executable. On Windows, existence is enough.
+/// nvm's installed check (`[ -x "$dir/bin/node" ]`).
 fn has_node_binary(version_dir: &Path) -> bool {
-  let Ok(metadata) = std::fs::metadata(node_binary(version_dir)) else {
+  is_executable(&node_binary(version_dir))
+}
+
+/// The path is a file that can be executed. On unix this needs an execute
+/// bit; on Windows, existence is enough.
+#[must_use]
+pub fn is_executable(path: &Path) -> bool {
+  let Ok(metadata) = std::fs::metadata(path) else {
     return false;
   };
   #[cfg(unix)]
@@ -77,6 +83,28 @@ fn has_node_binary(version_dir: &Path) -> bool {
 }
 
 impl NvmDir {
+  /// The installed version whose directory is `path`, if `path` is a version
+  /// directory in this tree with a usable `node` binary.
+  #[must_use]
+  pub fn installed_at(&self, path: &Path) -> Option<InstalledVersion> {
+    let version: Version = path.file_name()?.to_str()?.parse().ok()?;
+    let parent = path.parent()?;
+    let flavor = if parent == self.iojs_versions_dir() {
+      Flavor::Iojs
+    } else if parent == self.node_versions_dir()
+      || (parent == self.root && (version.major, version.minor) < (0, 12))
+    {
+      Flavor::Node
+    } else {
+      return None;
+    };
+    has_node_binary(path).then(|| InstalledVersion {
+      flavor,
+      version,
+      path: path.to_path_buf(),
+    })
+  }
+
   /// Lists installed versions, sorted from oldest to newest (io.js after
   /// node for equal numbers).
   ///
@@ -222,6 +250,29 @@ pub(super) mod tests {
     fake_install(&path);
     std::fs::set_permissions(node_binary(&path), std::fs::Permissions::from_mode(0o644)).unwrap();
     assert_eq!(dir.installed_versions().unwrap(), Vec::new());
+  }
+
+  #[test]
+  fn installed_at_maps_paths_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = NvmDir::new(tmp.path());
+    let node = dir.version_dir(Flavor::Node, &"20.0.0".parse().unwrap());
+    let iojs = dir.version_dir(Flavor::Iojs, &"3.3.1".parse().unwrap());
+    let legacy = dir.version_dir(Flavor::Node, &"0.10.48".parse().unwrap());
+    for path in [&node, &iojs, &legacy] {
+      fake_install(path);
+    }
+    assert_eq!(dir.installed_at(&node).unwrap().to_string(), "v20.0.0");
+    assert_eq!(dir.installed_at(&iojs).unwrap().to_string(), "iojs-v3.3.1");
+    assert_eq!(dir.installed_at(&legacy).unwrap().to_string(), "v0.10.48");
+    assert_eq!(
+      dir.installed_at(&tmp.path().join("elsewhere").join("v20.0.0")),
+      None
+    );
+    assert_eq!(
+      dir.installed_at(&dir.node_versions_dir().join("v21.0.0")),
+      None
+    );
   }
 
   #[test]
