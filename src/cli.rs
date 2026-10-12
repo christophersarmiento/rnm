@@ -53,6 +53,23 @@ pub enum Command {
 
   /// Print the active version.
   Current,
+
+  /// List the versions available on the mirror.
+  ///
+  /// Also refreshes the LTS aliases (lts/*, lts/<name>) that `use` reads.
+  #[command(alias = "list-remote")]
+  LsRemote {
+    /// Only versions starting with this prefix (18, v20.1), or lts/*,
+    /// lts/<name>.
+    #[arg(value_name = "VERSION")]
+    pattern: Option<String>,
+    /// Only LTS versions, or one LTS line with --lts=<name>.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = LATEST_LTS, value_name = "NAME")]
+    lts: Option<String>,
+    /// Never color the output.
+    #[arg(long)]
+    no_colors: bool,
+  },
 }
 
 #[cfg(test)]

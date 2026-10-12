@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 /// One request as the server saw it.
 #[derive(Clone, Debug)]
@@ -72,18 +73,39 @@ impl Reply {
 /// Starts a server that answers each request with `route(request)`. Returns
 /// its base URL and the log of requests.
 pub fn serve(route: impl Fn(&Request) -> Reply + Send + 'static) -> (String, Seen) {
+  let (base, seen, _) = spawn(None, route);
+  (base, seen)
+}
+
+/// Like [`serve`], but stops listening after `count` requests. Join the
+/// handle to be sure the port is closed.
+pub fn serve_count(
+  count: usize,
+  route: impl Fn(&Request) -> Reply + Send + 'static,
+) -> (String, Seen, JoinHandle<()>) {
+  spawn(Some(count), route)
+}
+
+fn spawn(
+  count: Option<usize>,
+  route: impl Fn(&Request) -> Reply + Send + 'static,
+) -> (String, Seen, JoinHandle<()>) {
   let listener = TcpListener::bind("127.0.0.1:0").unwrap();
   let base = format!("http://{}", listener.local_addr().unwrap());
   let seen: Seen = Arc::default();
   let log = Arc::clone(&seen);
-  std::thread::spawn(move || {
-    for stream in listener.incoming().flatten() {
+  let handle = std::thread::spawn(move || {
+    let streams = listener
+      .incoming()
+      .flatten()
+      .take(count.unwrap_or(usize::MAX));
+    for stream in streams {
       let request = read_request(&stream);
       log.lock().unwrap().push(request.clone());
       write_reply(stream, &route(&request));
     }
   });
-  (base, seen)
+  (base, seen, handle)
 }
 
 /// A port nothing listens on.
