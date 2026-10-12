@@ -23,7 +23,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub use alias::{AliasError, Aliases};
-pub use installed::{Flavor, InstalledVersion};
+pub use installed::{Flavor, InstalledVersion, bin_dir, is_executable, node_binary};
 pub use resolve::{ResolveError, Resolved};
 
 use crate::version::Version;

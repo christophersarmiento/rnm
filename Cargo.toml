@@ -29,3 +29,10 @@ pedantic = { level = "warn", priority = -1 }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2.190"
+
+[target."cfg(windows)".dependencies]
+junction = "2.1.0"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }

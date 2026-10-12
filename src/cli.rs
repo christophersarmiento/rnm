@@ -3,6 +3,7 @@
 //! Subcommands use nvm's names first; fnm's names are accepted as aliases.
 
 use clap::{Parser, Subcommand};
+use rnm::shell::ShellKind;
 
 #[derive(Debug, Parser)]
 #[command(name = "rnm", version, about, propagate_version = true)]
@@ -12,7 +13,46 @@ pub struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum Command {}
+pub enum Command {
+  /// Print shell code that sets up rnm in the current shell.
+  ///
+  /// Add the output to your shell's startup file, for example
+  /// `eval "$(rnm env --shell bash)"` in ~/.bashrc.
+  Env {
+    /// The shell to generate code for. Detected from the parent process
+    /// when omitted.
+    #[arg(long, value_enum)]
+    shell: Option<ShellKind>,
+    /// Print the environment variables as JSON instead of shell code.
+    #[arg(long)]
+    json: bool,
+  },
+
+  /// Switch this shell to an installed version.
+  ///
+  /// Without a version, uses the nearest .nvmrc or .node-version.
+  Use {
+    /// A version (18, v20.11.1), lts/*, lts/<name>, node, system, or an
+    /// alias.
+    #[arg(value_name = "VERSION")]
+    spec: Option<String>,
+    /// Use the newest LTS, or the named LTS line with --lts=<name>.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "*", value_name = "NAME")]
+    lts: Option<String>,
+    /// Print nothing on success.
+    #[arg(long)]
+    silent: bool,
+    /// Print nothing if this version is already in use.
+    #[arg(long)]
+    silent_if_unchanged: bool,
+    /// Write the version to ./.nvmrc.
+    #[arg(long, short = 'w')]
+    save: bool,
+  },
+
+  /// Print the active version.
+  Current,
+}
 
 #[cfg(test)]
 mod tests {

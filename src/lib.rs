@@ -2,5 +2,9 @@
 //!
 //! The library holds all logic; `main.rs` is only the command-line front end.
 
+pub mod commands;
+pub mod multishell;
 pub mod nvm_dir;
+pub mod shell;
+pub mod sys;
 pub mod version;
