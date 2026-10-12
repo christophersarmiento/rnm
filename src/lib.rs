@@ -4,5 +4,6 @@
 
 pub mod multishell;
 pub mod nvm_dir;
+pub mod shell;
 pub mod sys;
 pub mod version;
