@@ -2,11 +2,11 @@
 
 mod cli;
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
-use rnm::commands::{self, Context, Failure, UseOptions};
+use rnm::commands::{self, Context, Failure, LsRemoteOptions, UseOptions};
 
 use crate::cli::{Cli, Command};
 
@@ -20,7 +20,9 @@ fn main() -> ExitCode {
   match run(command) {
     | Ok(()) => ExitCode::SUCCESS,
     | Err(failure) => {
-      let _ = writeln!(std::io::stderr(), "{}", failure.message);
+      if !failure.message.is_empty() {
+        let _ = writeln!(std::io::stderr(), "{}", failure.message);
+      }
       ExitCode::from(failure.code)
     },
   }
@@ -51,5 +53,18 @@ fn run(command: Command) -> Result<(), Failure> {
       commands::use_version(&ctx, &opts, &mut out)
     },
     | Command::Current => commands::current(&ctx, &mut out),
+    | Command::LsRemote {
+      pattern,
+      lts,
+      no_colors,
+    } => {
+      let opts = LsRemoteOptions {
+        pattern,
+        lts,
+        no_colors,
+        terminal: std::io::stdout().is_terminal(),
+      };
+      commands::ls_remote(&ctx, &opts, &mut out, &mut std::io::stderr())
+    },
   }
 }

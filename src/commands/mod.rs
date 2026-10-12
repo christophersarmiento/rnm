@@ -2,8 +2,10 @@
 //! returns a [`Failure`] with nvm's exit code on error. `main.rs` only parses
 //! arguments and maps failures to exit codes.
 
+mod colors;
 mod current;
 mod env;
+mod ls_remote;
 mod use_version;
 
 use std::ffi::OsString;
@@ -13,10 +15,13 @@ use std::path::{Path, PathBuf};
 
 pub use current::current;
 pub use env::env;
+pub use ls_remote::{LsRemoteOptions, ls_remote};
 pub use use_version::{UseOptions, use_version};
 
+use crate::http::{Client, Mirror};
 use crate::multishell::{self, Multishells, Session};
 use crate::nvm_dir::{NODE_EXECUTABLE, NvmDir, global_modules_dir, is_executable};
+use crate::remote::{RemoteIndex, load_index, refresh_lts_aliases};
 
 /// What nvm prints for "no version is active".
 pub const NONE_LABEL: &str = "none";
@@ -24,7 +29,8 @@ pub const NONE_LABEL: &str = "none";
 /// What nvm prints for a Node.js found outside its tree.
 pub const SYSTEM_LABEL: &str = "system";
 
-/// A failed command: the message for stderr and the process exit code.
+/// A failed command: the message for stderr and the process exit code. An
+/// empty message means the command's output already explains the failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
   pub code: u8,
@@ -116,6 +122,12 @@ impl Context {
     (self.var)(key).filter(|v| !v.is_empty())
   }
 
+  /// Reads an environment variable as text; empty counts as unset.
+  #[must_use]
+  pub fn var_string(&self, key: &str) -> Option<String> {
+    self.var(key).map(|v| v.to_string_lossy().into_owned())
+  }
+
   /// The first `node` on `PATH` that is not managed by rnm: not inside the
   /// install tree and not inside a session link.
   #[must_use]
@@ -170,6 +182,30 @@ fn json_string_field(text: &str, key: &str) -> Option<String> {
   let after_colon = after_key.trim_start().strip_prefix(':')?.trim_start();
   let value = after_colon.strip_prefix('"')?;
   Some(value[..value.find('"')?].to_owned())
+}
+
+/// Loads the mirror's version index (revalidating the cached copy) and
+/// refreshes nvm's LTS aliases from it. Warnings go to `err`.
+///
+/// # Errors
+///
+/// Exit code 1 when the mirror settings are invalid or the index cannot be
+/// loaded.
+pub(crate) fn remote_index(ctx: &Context, err: &mut dyn Write) -> Result<RemoteIndex, Failure> {
+  let failure = |e: &dyn fmt::Display| Failure::new(exit::ERROR, e.to_string());
+  let mirror = Mirror::from_env(|key| ctx.var(key)).map_err(|e| failure(&e))?;
+  let client = Client::for_mirror(&mirror);
+  let loaded = load_index(&client, &mirror, &ctx.nvm_dir.cache_dir()).map_err(|e| failure(&e))?;
+  for warning in &loaded.warnings {
+    say(err, warning);
+  }
+  if let Err(e) = refresh_lts_aliases(&ctx.nvm_dir.aliases(), &loaded.index) {
+    say(
+      err,
+      format_args!("warning: cannot update the LTS aliases: {e}"),
+    );
+  }
+  Ok(loaded.index)
 }
 
 /// Writes a line, ignoring broken pipes (`rnm current | head`).
