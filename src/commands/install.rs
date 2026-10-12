@@ -235,12 +235,9 @@ fn finish(
   }
 
   let aliases = ctx.nvm_dir.aliases();
-  let alias_failure = |e: crate::nvm_dir::AliasError| Failure::new(exit::ERROR, e.to_string());
-  let has_default = aliases.get(DEFAULT_ALIAS).map_err(alias_failure)?.is_some();
+  let has_default = aliases.get(DEFAULT_ALIAS)?.is_some();
   if !has_default {
-    aliases
-      .set(DEFAULT_ALIAS, requested)
-      .map_err(alias_failure)?;
+    aliases.set(DEFAULT_ALIAS, requested)?;
     say(
       out,
       format_args!(
@@ -257,7 +254,7 @@ fn finish(
   if let Some(name) = requested_alias
     && (has_default || name != DEFAULT_ALIAS)
   {
-    aliases.set(name, requested).map_err(alias_failure)?;
+    aliases.set(name, requested)?;
     say(out, alias_line(name, requested, installed));
   }
 
