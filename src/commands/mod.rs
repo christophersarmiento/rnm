@@ -16,30 +16,36 @@ pub use env::env;
 pub use use_version::{UseOptions, use_version};
 
 use crate::multishell::{self, Multishells, Session};
-use crate::nvm_dir::{NvmDir, is_executable};
+use crate::nvm_dir::{NODE_EXECUTABLE, NvmDir, global_modules_dir, is_executable};
+
+/// What nvm prints for "no version is active".
+pub const NONE_LABEL: &str = "none";
+
+/// What nvm prints for a Node.js found outside its tree.
+pub const SYSTEM_LABEL: &str = "system";
 
 /// A failed command: the message for stderr and the process exit code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
-  pub code: i32,
+  pub code: u8,
   pub message: String,
 }
 
 /// nvm's exit codes, kept for scripts that check them.
 pub mod exit {
   /// General error.
-  pub const ERROR: i32 = 1;
+  pub const ERROR: u8 = 1;
   /// The requested version is not installed or not available.
-  pub const NOT_AVAILABLE: i32 = 3;
+  pub const NOT_AVAILABLE: u8 = 3;
   /// An alias chain loops.
-  pub const ALIAS_LOOP: i32 = 8;
+  pub const ALIAS_LOOP: u8 = 8;
   /// No version given and none found in a version file, or usage error.
-  pub const NO_VERSION: i32 = 127;
+  pub const NO_VERSION: u8 = 127;
 }
 
 impl Failure {
   #[must_use]
-  pub fn new(code: i32, message: impl Into<String>) -> Self {
+  pub fn new(code: u8, message: impl Into<String>) -> Self {
     Self {
       code,
       message: message.into(),
@@ -116,12 +122,11 @@ impl Context {
   pub fn system_node(&self) -> Option<PathBuf> {
     let managed =
       |dir: &Path| dir.starts_with(self.nvm_dir.root()) || dir.starts_with(self.multishells.dir());
-    let name = if cfg!(windows) { "node.exe" } else { "node" };
     self
       .path
       .iter()
       .filter(|dir| !managed(dir))
-      .map(|dir| dir.join(name))
+      .map(|dir| dir.join(NODE_EXECUTABLE))
       .find(|p| is_executable(p))
   }
 }
@@ -150,18 +155,9 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// `package.json` without running anything.
 #[must_use]
 pub fn npm_version(version_dir: &Path) -> Option<String> {
-  let package = if cfg!(windows) {
-    version_dir
-      .join("node_modules")
-      .join("npm")
-      .join("package.json")
-  } else {
-    version_dir
-      .join("lib")
-      .join("node_modules")
-      .join("npm")
-      .join("package.json")
-  };
+  let package = global_modules_dir(version_dir)
+    .join("npm")
+    .join("package.json");
   let text = std::fs::read_to_string(package).ok()?;
   json_string_field(&text, "version")
 }
@@ -188,11 +184,7 @@ mod tests {
   #[test]
   fn reads_npm_version() {
     let tmp = tempfile::tempdir().unwrap();
-    let dir = if cfg!(windows) {
-      tmp.path().join("node_modules").join("npm")
-    } else {
-      tmp.path().join("lib").join("node_modules").join("npm")
-    };
+    let dir = global_modules_dir(tmp.path()).join("npm");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
       dir.join("package.json"),

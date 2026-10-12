@@ -62,7 +62,31 @@ impl Version {
   pub const fn is_prerelease(&self) -> bool {
     self.pre.is_some()
   }
+
+  /// nvm's "stable": every release since 1.0, and the even minor lines of
+  /// `0.x` (`0.10`, `0.12`), which is how Node.js marked stable releases
+  /// before 1.0.
+  #[must_use]
+  pub const fn is_stable(&self) -> bool {
+    self.major > 0 || self.minor.is_multiple_of(2)
+  }
+
+  /// nvm's "unstable": the odd minor lines of `0.x` (`0.11`).
+  #[must_use]
+  pub const fn is_unstable(&self) -> bool {
+    !self.is_stable()
+  }
+
+  /// Versions before 0.12 sit in the root of nvm's tree instead of
+  /// `versions/node` (`nvm_version_path`).
+  #[must_use]
+  pub const fn uses_legacy_layout(&self) -> bool {
+    self.major == 0 && self.minor < FIRST_VERSIONS_DIR_MINOR
+  }
 }
+
+/// The first `0.x` minor that nvm installs under `versions/node`.
+const FIRST_VERSIONS_DIR_MINOR: u64 = 12;
 
 impl FromStr for Version {
   type Err = ParseVersionError;
@@ -235,6 +259,17 @@ mod tests {
       "99999999999999999999.0.0".parse::<Version>(),
       Err(ParseVersionError::Overflow(_))
     ));
+  }
+
+  #[test]
+  fn nvm_release_lines() {
+    assert!(v("0.10.48").is_stable());
+    assert!(v("0.11.16").is_unstable());
+    assert!(v("1.0.0").is_stable());
+    assert!(v("21.0.0").is_stable());
+    assert!(v("0.10.48").uses_legacy_layout());
+    assert!(!v("0.12.0").uses_legacy_layout());
+    assert!(!v("1.0.0").uses_legacy_layout());
   }
 
   #[test]

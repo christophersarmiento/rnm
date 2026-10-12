@@ -9,6 +9,19 @@ use std::fmt::{self, Write as _};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::fs::write_atomic;
+use crate::version::{LATEST_LTS, LTS_PREFIX, is_valid_alias_component};
+
+/// The subdirectory that holds `lts/<codename>` aliases.
+const LTS_DIR: &str = "lts";
+
+/// Characters Windows forbids in file names, plus `%`, the escape character
+/// of [`encode_component`].
+const WINDOWS_RESERVED: [char; 8] = ['<', '>', ':', '"', '|', '?', '*', '%'];
+
+/// `%` followed by two hex digits.
+const ESCAPE_LEN: usize = 3;
+
 /// The alias store under `<root>/alias`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Aliases {
@@ -87,21 +100,17 @@ impl Aliases {
   pub fn set(&self, name: &str, target: &str) -> Result<(), AliasError> {
     let path = self.path(name)?;
     let target = target.trim();
-    if target.is_empty() || target.contains(['\n', '\r', '#']) {
+    let is_single_line = !target.contains(['\n', '\r']);
+    let has_comment = target.contains('#');
+    if target.is_empty() || !is_single_line || has_comment {
       return Err(AliasError::InvalidTarget(target.to_owned()));
     }
-    let parent = path.parent().unwrap_or(&self.dir);
     let io_error = |source| AliasError::Io {
       path: path.clone(),
       source,
     };
-    std::fs::create_dir_all(parent).map_err(io_error)?;
-    let tmp = parent.join(format!(".{}.tmp-{}", file_name(&path), std::process::id()));
-    std::fs::write(&tmp, format!("{target}\n")).map_err(io_error)?;
-    std::fs::rename(&tmp, &path).map_err(|source| {
-      let _ = std::fs::remove_file(&tmp);
-      io_error(source)
-    })
+    std::fs::create_dir_all(path.parent().unwrap_or(&self.dir)).map_err(io_error)?;
+    write_atomic(&path, &format!("{target}\n")).map_err(io_error)
   }
 
   /// Removes alias `name`. Returns `false` if it did not exist.
@@ -133,8 +142,8 @@ impl Aliases {
       }
     }
     if include_lts {
-      for name in file_names(&self.dir.join("lts"))? {
-        let name = format!("lts/{name}");
+      for name in file_names(&self.dir.join(LTS_DIR))? {
+        let name = format!("{LTS_PREFIX}{name}");
         if let Some(target) = self.get(&name)? {
           out.push((name, target));
         }
@@ -151,8 +160,8 @@ impl Aliases {
   ///
   /// Returns an error if the directory exists but cannot be read.
   pub fn lts_names(&self) -> Result<Vec<String>, AliasError> {
-    let mut names = file_names(&self.dir.join("lts"))?;
-    names.retain(|name| name != "*");
+    let mut names = file_names(&self.dir.join(LTS_DIR))?;
+    names.retain(|name| name != LATEST_LTS);
     names.sort();
     Ok(names)
   }
@@ -165,12 +174,7 @@ impl Aliases {
     }
     let mut path = self.dir.clone();
     for component in name.split('/') {
-      let bad_char = |c: char| c == '\\' || c == '#' || c.is_whitespace() || c.is_control();
-      if component.is_empty()
-        || component == "."
-        || component == ".."
-        || component.contains(bad_char)
-      {
+      if !is_valid_alias_component(component) {
         return Err(invalid());
       }
       path.push(encode_component(component).as_ref());
@@ -229,26 +233,18 @@ fn is_missing(e: &io::Error) -> bool {
   )
 }
 
-fn file_name(path: &Path) -> String {
-  path
-    .file_name()
-    .map(|n| n.to_string_lossy().into_owned())
-    .unwrap_or_default()
-}
-
 /// Windows file names cannot contain `<>:"|?*`, but nvm's tree has a file
 /// named `*` (`alias/lts/*`). The Windows tree is rnm's own, so those
 /// characters (and `%`, the escape character) are percent-encoded there.
 /// On unix, names are used as-is, matching nvm.
 fn encode_component(component: &str) -> std::borrow::Cow<'_, str> {
-  if cfg!(windows) && component.contains(['<', '>', ':', '"', '|', '?', '*', '%']) {
-    let mut out = String::with_capacity(component.len() + 8);
+  if cfg!(windows) && component.contains(WINDOWS_RESERVED) {
+    let mut out = String::with_capacity(component.len());
     for c in component.chars() {
-      match c {
-        | '<' | '>' | ':' | '"' | '|' | '?' | '*' | '%' => {
-          let _ = write!(out, "%{:02X}", u32::from(c));
-        },
-        | c => out.push(c),
+      if WINDOWS_RESERVED.contains(&c) {
+        let _ = write!(out, "%{:02X}", u32::from(c));
+      } else {
+        out.push(c);
       }
     }
     out.into()
@@ -265,11 +261,11 @@ fn decode_component(name: &str) -> String {
   let mut rest = name;
   while let Some(index) = rest.find('%') {
     out.push_str(&rest[..index]);
-    let hex = rest.get(index + 1..index + 3);
+    let hex = rest.get(index + 1..index + ESCAPE_LEN);
     match hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
       | Some(byte) => {
         out.push(char::from(byte));
-        rest = &rest[index + 3..];
+        rest = &rest[index + ESCAPE_LEN..];
       },
       | None => {
         out.push('%');

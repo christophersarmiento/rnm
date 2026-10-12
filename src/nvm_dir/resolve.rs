@@ -7,7 +7,7 @@ use std::io;
 use super::NvmDir;
 use super::alias::AliasError;
 use super::installed::{Flavor, InstalledVersion};
-use crate::version::{LtsSpec, SpecError, Version, VersionReq, VersionSpec};
+use crate::version::{LTS_PREFIX, LtsSpec, SpecError, Version, VersionReq, VersionSpec};
 
 /// The result of resolving a spec locally.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,7 +50,7 @@ impl fmt::Display for ResolveError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
       | Self::NotInstalled(spec) => write!(f, "version '{spec}' is not installed"),
-      | Self::AliasNotFound(name) if name.starts_with("lts/") => {
+      | Self::AliasNotFound(name) if name.starts_with(LTS_PREFIX) => {
         write!(
           f,
           "LTS alias '{name}' not found; run 'rnm ls-remote --lts' to refresh LTS aliases"
@@ -149,10 +149,10 @@ impl Resolver<'_> {
           .ok_or_else(not_installed)
       },
       | VersionSpec::Node | VersionSpec::Stable => self
-        .newest(Flavor::Node, |v| v.major > 0 || v.minor % 2 == 0)
+        .newest(Flavor::Node, Version::is_stable)
         .ok_or_else(not_installed),
       | VersionSpec::Unstable => self
-        .newest(Flavor::Node, |v| v.major == 0 && v.minor % 2 == 1)
+        .newest(Flavor::Node, Version::is_unstable)
         .ok_or_else(not_installed),
       | VersionSpec::Iojs(req) => self
         .newest(Flavor::Iojs, |v| {
@@ -161,15 +161,15 @@ impl Resolver<'_> {
         .ok_or_else(not_installed),
       | VersionSpec::System => Ok(Resolved::System),
       | VersionSpec::Current => Ok(Resolved::Current),
-      | VersionSpec::Lts(LtsSpec::Latest) => self.follow("lts/*"),
-      | VersionSpec::Lts(LtsSpec::Named(name)) => self.follow(&format!("lts/{name}")),
+      | VersionSpec::Lts(LtsSpec::Latest | LtsSpec::Named(_)) => self.follow(&spec.to_string()),
       | VersionSpec::Lts(LtsSpec::Offset(n)) => {
         let names = self.dir.aliases().lts_names()?;
-        let index = usize::try_from(*n)
+        let newest = names.len().checked_sub(1);
+        let nth_before_newest = usize::try_from(*n)
           .ok()
-          .and_then(|n| names.len().checked_sub(n + 1));
-        match index {
-          | Some(index) => self.follow(&format!("lts/{}", names[index])),
+          .and_then(|n| newest?.checked_sub(n));
+        match nth_before_newest {
+          | Some(index) => self.follow(&format!("{LTS_PREFIX}{}", names[index])),
           | None => Err(ResolveError::LtsOffsetTooLarge(*n)),
         }
       },

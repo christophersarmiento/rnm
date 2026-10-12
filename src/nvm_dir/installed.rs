@@ -5,7 +5,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::NvmDir;
-use crate::version::Version;
+use crate::version::{IOJS_PREFIX, Version};
+
+/// The file name of the `node` binary.
+pub const NODE_EXECUTABLE: &str = if cfg!(windows) { "node.exe" } else { "node" };
+
+/// Any of the owner, group, or other execute bits.
+#[cfg(unix)]
+const ANY_EXECUTE_BIT: u32 = 0o111;
 
 /// Which runtime a version belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -38,7 +45,7 @@ impl fmt::Display for InstalledVersion {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self.flavor {
       | Flavor::Node => self.version.fmt(f),
-      | Flavor::Iojs => write!(f, "iojs-{}", self.version),
+      | Flavor::Iojs => write!(f, "{IOJS_PREFIX}{}", self.version),
     }
   }
 }
@@ -56,7 +63,29 @@ pub fn bin_dir(version_dir: &Path) -> PathBuf {
 /// The `node` binary inside a version directory.
 #[must_use]
 pub fn node_binary(version_dir: &Path) -> PathBuf {
-  bin_dir(version_dir).join(if cfg!(windows) { "node.exe" } else { "node" })
+  bin_dir(version_dir).join(NODE_EXECUTABLE)
+}
+
+/// The inverse of [`node_binary`]: the version directory that contains the
+/// `node` binary at `binary`.
+#[must_use]
+pub fn version_dir_of(binary: &Path) -> Option<&Path> {
+  let bin = binary.parent()?;
+  if cfg!(windows) {
+    Some(bin)
+  } else {
+    bin.parent()
+  }
+}
+
+/// Where npm installs global packages for a version (`npm root -g`).
+#[must_use]
+pub fn global_modules_dir(version_dir: &Path) -> PathBuf {
+  if cfg!(windows) {
+    version_dir.join("node_modules")
+  } else {
+    version_dir.join("lib").join("node_modules")
+  }
 }
 
 /// nvm's installed check (`[ -x "$dir/bin/node" ]`).
@@ -74,7 +103,7 @@ pub fn is_executable(path: &Path) -> bool {
   #[cfg(unix)]
   {
     use std::os::unix::fs::PermissionsExt;
-    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    metadata.is_file() && metadata.permissions().mode() & ANY_EXECUTE_BIT != 0
   }
   #[cfg(not(unix))]
   {
@@ -89,11 +118,10 @@ impl NvmDir {
   pub fn installed_at(&self, path: &Path) -> Option<InstalledVersion> {
     let version: Version = path.file_name()?.to_str()?.parse().ok()?;
     let parent = path.parent()?;
+    let is_legacy_install = parent == self.root && version.uses_legacy_layout();
     let flavor = if parent == self.iojs_versions_dir() {
       Flavor::Iojs
-    } else if parent == self.node_versions_dir()
-      || (parent == self.root && (version.major, version.minor) < (0, 12))
-    {
+    } else if parent == self.node_versions_dir() || is_legacy_install {
       Flavor::Node
     } else {
       return None;
@@ -118,16 +146,18 @@ impl NvmDir {
   /// Returns an error if a directory exists but cannot be read.
   pub fn installed_versions(&self) -> io::Result<Vec<InstalledVersion>> {
     let mut found = Vec::new();
-    // The legacy root only holds node < 0.12; anything newer there (or the
-    // `versions` dir itself) is not a legacy install.
-    let legacy = |v: &Version| (v.major, v.minor) < (0, 12);
     scan(
       &self.node_versions_dir(),
       Flavor::Node,
       |_| true,
       &mut found,
     )?;
-    scan(&self.root, Flavor::Node, legacy, &mut found)?;
+    scan(
+      &self.root,
+      Flavor::Node,
+      Version::uses_legacy_layout,
+      &mut found,
+    )?;
     scan(
       &self.iojs_versions_dir(),
       Flavor::Iojs,

@@ -10,6 +10,17 @@ use std::path::{Path, PathBuf};
 
 use super::spec::{SpecError, VersionSpec};
 
+const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+const UTF16_LE_BOM: &[u8] = &[0xFF, 0xFE];
+const UTF16_BE_BOM: &[u8] = &[0xFE, 0xFF];
+
+/// POSIX `[[:space:]]`, which nvm trims. Unlike `str::trim`, it excludes
+/// Unicode spaces such as U+00A0.
+const POSIX_SPACE: [char; 6] = [' ', '\t', '\n', '\x0B', '\x0C', '\r'];
+
+/// nvm reserves the `node` key in `.nvmrc` and rejects `node=<version>`.
+const RESERVED_NVMRC_KEY: &str = "node";
+
 /// The kinds of version file rnm reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VersionFileKind {
@@ -150,7 +161,7 @@ impl VersionFile {
 /// Returns [`VersionFileError::NotText`] for anything else.
 pub fn decode_version_file(bytes: &[u8]) -> Result<String, VersionFileError> {
   let decode_utf16 = |rest: &[u8], from_bytes: fn([u8; 2]) -> u16| {
-    let (pairs, remainder) = rest.as_chunks::<2>();
+    let (pairs, remainder) = rest.as_chunks();
     if !remainder.is_empty() {
       return Err(VersionFileError::NotText);
     }
@@ -160,11 +171,14 @@ pub fn decode_version_file(bytes: &[u8]) -> Result<String, VersionFileError> {
       .map_err(|_| VersionFileError::NotText)
   };
 
-  match bytes {
-    | [0xEF, 0xBB, 0xBF, rest @ ..] => utf8(rest),
-    | [0xFF, 0xFE, rest @ ..] => decode_utf16(rest, u16::from_le_bytes),
-    | [0xFE, 0xFF, rest @ ..] => decode_utf16(rest, u16::from_be_bytes),
-    | _ => utf8(bytes),
+  if let Some(rest) = bytes.strip_prefix(UTF8_BOM) {
+    utf8(rest)
+  } else if let Some(rest) = bytes.strip_prefix(UTF16_LE_BOM) {
+    decode_utf16(rest, u16::from_le_bytes)
+  } else if let Some(rest) = bytes.strip_prefix(UTF16_BE_BOM) {
+    decode_utf16(rest, u16::from_be_bytes)
+  } else {
+    utf8(bytes)
   }
 }
 
@@ -174,12 +188,10 @@ fn utf8(bytes: &[u8]) -> Result<String, VersionFileError> {
     .map_err(|_| VersionFileError::NotText)
 }
 
-/// Trims POSIX `[[:space:]]`: space, tab, LF, VT, FF, CR.
 fn trim_space(s: &str) -> &str {
-  s.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\x0B' | '\x0C' | '\r'))
+  s.trim_matches(POSIX_SPACE)
 }
 
-/// Removes a `#` comment and surrounding whitespace from one line.
 fn strip_comment(line: &str) -> &str {
   trim_space(line.split_once('#').map_or(line, |(before, _)| before))
 }
@@ -209,11 +221,12 @@ pub fn parse_nvmrc(content: &str) -> Result<NvmrcContent, VersionFileError> {
     .map(strip_comment)
     .filter(|line| !line.is_empty())
   {
+    // nvm counts a line that starts with `=` as a version line.
+    let is_option = line.contains('=') && !line.starts_with('=');
     match line.split_once('=') {
-      // nvm counts a line that starts with `=` as a version line.
-      | Some((key, value)) if !line.starts_with('=') => {
+      | Some((key, value)) if is_option => {
         let key = trim_space(key);
-        if key == "node" {
+        if key == RESERVED_NVMRC_KEY {
           return Err(VersionFileError::NodeKey);
         }
         if options.iter().any(|(existing, _)| existing == key) {

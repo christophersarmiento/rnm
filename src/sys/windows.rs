@@ -4,7 +4,9 @@
 
 use std::collections::HashMap;
 
-use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, STILL_ACTIVE};
+use windows_sys::Win32::Foundation::{
+  CloseHandle, ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE, STILL_ACTIVE,
+};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
   CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
@@ -12,10 +14,11 @@ use windows_sys::Win32::System::Threading::{
   GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
-use super::Process;
+use super::{Process, ProcessInfo};
 
-/// pid → (ppid, exe name).
-fn snapshot() -> HashMap<u32, (u32, String)> {
+const EXE_SUFFIX: &str = ".exe";
+
+fn snapshot() -> HashMap<u32, ProcessInfo> {
   let mut map = HashMap::new();
   // SAFETY: plain Win32 calls; the handle is closed below, and `entry.dwSize`
   // is set before the first use as the API requires.
@@ -36,7 +39,10 @@ fn snapshot() -> HashMap<u32, (u32, String)> {
       let exe = String::from_utf16_lossy(&entry.szExeFile[..len]);
       map.insert(
         entry.th32ProcessID,
-        (entry.th32ParentProcessID, strip_exe(&exe)),
+        ProcessInfo {
+          parent: entry.th32ParentProcessID,
+          name: strip_exe(&exe),
+        },
       );
       ok = Process32NextW(handle, &raw mut entry);
     }
@@ -46,36 +52,40 @@ fn snapshot() -> HashMap<u32, (u32, String)> {
 }
 
 fn strip_exe(name: &str) -> String {
-  let len = name.len();
-  if len > 4 && name[len - 4..].eq_ignore_ascii_case(".exe") {
-    name[..len - 4].to_owned()
+  let stem_len = name.len().saturating_sub(EXE_SUFFIX.len());
+  let has_exe_suffix = name
+    .get(stem_len..)
+    .is_some_and(|suffix| suffix.eq_ignore_ascii_case(EXE_SUFFIX));
+  if stem_len > 0 && has_exe_suffix {
+    name[..stem_len].to_owned()
   } else {
     name.to_owned()
   }
 }
 
 pub fn parent_pid() -> Option<u32> {
-  snapshot().get(&std::process::id()).map(|&(ppid, _)| ppid)
+  snapshot().get(&std::process::id()).map(|info| info.parent)
 }
 
 pub fn ancestors(limit: usize) -> Vec<Process> {
   let map = snapshot();
   let mut chain = Vec::new();
-  let Some(&(mut pid, _)) = map.get(&std::process::id()) else {
+  let Some(mut pid) = map.get(&std::process::id()).map(|info| info.parent) else {
     return chain;
   };
   while chain.len() < limit && pid > 0 {
-    let Some((parent, name)) = map.get(&pid) else {
+    let Some(info) = map.get(&pid) else {
       break;
     };
     chain.push(Process {
       pid,
-      name: name.clone(),
+      name: info.name.clone(),
     });
-    if *parent == pid {
+    let is_own_parent = info.parent == pid;
+    if is_own_parent {
       break;
     }
-    pid = *parent;
+    pid = info.parent;
   }
   chain
 }
@@ -85,8 +95,9 @@ pub fn is_alive(pid: u32) -> bool {
   unsafe {
     let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
     if handle.is_null() {
-      // Access denied means the process exists but is protected.
-      return std::io::Error::last_os_error().raw_os_error() == Some(5);
+      let exists_but_protected =
+        std::io::Error::last_os_error().raw_os_error() == i32::try_from(ERROR_ACCESS_DENIED).ok();
+      return exists_but_protected;
     }
     let mut code = 0u32;
     let ok = GetExitCodeProcess(handle, &raw mut code);

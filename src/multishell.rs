@@ -26,6 +26,9 @@ pub const ENV_VAR: &str = "RNM_MULTISHELL_PATH";
 /// The name of the empty directory that `system` links point to.
 const SYSTEM_DIR: &str = ".system";
 
+/// Separates the owner PID from the timestamp in a link name.
+const NAME_SEPARATOR: char = '_';
+
 /// The directory that holds all session links.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Multishells {
@@ -81,8 +84,10 @@ impl Multishells {
     std::fs::create_dir_all(&self.dir)?;
     let nanos = SystemTime::now()
       .duration_since(UNIX_EPOCH)
-      .map_or(0, |d| d.as_nanos());
-    let session = Session::new(self.dir.join(format!("{owner_pid}_{nanos}")));
+      .unwrap_or_default()
+      .as_nanos();
+    let name = format!("{owner_pid}{NAME_SEPARATOR}{nanos}");
+    let session = Session::new(self.dir.join(name));
     session.point_to(target)?;
     Ok(session)
   }
@@ -154,8 +159,11 @@ impl Session {
   #[must_use]
   pub fn owner_pid(&self) -> Option<u32> {
     let name = self.path.file_name()?.to_str()?;
-    let (pid, nanos) = name.split_once('_')?;
-    nanos.bytes().all(|b| b.is_ascii_digit()).then_some(())?;
+    let (pid, nanos) = name.split_once(NAME_SEPARATOR)?;
+    let is_timestamp = nanos.bytes().all(|b| b.is_ascii_digit());
+    if !is_timestamp {
+      return None;
+    }
     pid.parse().ok()
   }
 
@@ -171,14 +179,7 @@ impl Session {
         Ok(Some(Target::System))
       },
       | Ok(target) => Ok(Some(Target::Version(target))),
-      | Err(e)
-        if matches!(
-          e.kind(),
-          io::ErrorKind::NotFound | io::ErrorKind::InvalidInput
-        ) =>
-      {
-        Ok(None)
-      },
+      | Err(e) if is_not_a_link(&e) => Ok(None),
       | Err(e) => Err(e),
     }
   }
@@ -215,6 +216,15 @@ pub enum Target {
   System,
 }
 
+/// Reading a missing path fails with `NotFound`; reading a path that exists
+/// but is not a link fails with `InvalidInput`. Both mean "no session link".
+fn is_not_a_link(e: &io::Error) -> bool {
+  matches!(
+    e.kind(),
+    io::ErrorKind::NotFound | io::ErrorKind::InvalidInput
+  )
+}
+
 #[cfg(unix)]
 fn read_link(link: &Path) -> io::Result<PathBuf> {
   std::fs::read_link(link)
@@ -225,19 +235,9 @@ fn read_link(link: &Path) -> io::Result<PathBuf> {
   junction::get_target(link)
 }
 
-/// Atomically replaces `link` with a symlink to `target`.
 #[cfg(unix)]
 fn replace_link(target: &Path, link: &Path) -> io::Result<()> {
-  let name = link
-    .file_name()
-    .map(|n| n.to_string_lossy().into_owned())
-    .unwrap_or_default();
-  let tmp = link.with_file_name(format!(".{name}.tmp-{}", std::process::id()));
-  let _ = std::fs::remove_file(&tmp);
-  std::os::unix::fs::symlink(target, &tmp)?;
-  std::fs::rename(&tmp, link).inspect_err(|_| {
-    let _ = std::fs::remove_file(&tmp);
-  })
+  crate::fs::replace_symlink(target, link)
 }
 
 /// Replaces `link` with a junction to `target`. Junctions cannot be swapped

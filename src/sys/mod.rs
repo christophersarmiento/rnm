@@ -19,8 +19,15 @@ use windows as imp;
 pub struct Process {
   pub pid: u32,
   /// Executable name: a file name without directories and without `.exe`.
-  /// Login shells keep their leading `-` (for example `-zsh`).
+  /// Some systems report login shells with a leading `-` (for example
+  /// `-zsh`), so callers should strip it.
   pub name: String,
+}
+
+/// What the platform reports about one process.
+struct ProcessInfo {
+  parent: u32,
+  name: String,
 }
 
 /// The ancestors of the current process, starting with its parent, at most

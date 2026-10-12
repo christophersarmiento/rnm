@@ -10,6 +10,19 @@ use crate::shell::{EnvPlan, Inferred, ShellKind};
 use crate::sys;
 use crate::version::VersionSpec;
 
+/// nvm's variable for the active version's `bin` directory.
+const NVM_BIN: &str = "NVM_BIN";
+
+/// nvm's variable for the active version's headers (`include/node`).
+const NVM_INC: &str = "NVM_INC";
+
+/// The alias a new shell session starts with.
+const DEFAULT_ALIAS: &str = "default";
+
+/// Enough ancestors to see the shell and, when `rnm env` runs inside `$(…)`,
+/// the subshell in front of it. See [`owner_pid`].
+const PARENT_AND_GRANDPARENT: usize = 2;
+
 /// Prints the shell code (or JSON) that puts this session's link on `PATH`.
 ///
 /// - A new link is created for the calling shell, pointing at the `default`
@@ -35,15 +48,16 @@ pub fn env(
     | (None, true) => None,
     | (None, false) => Some(infer_shell()?),
   };
-  if shell == Some(ShellKind::Nu) && !json {
+  let wants_nu_loader = shell == Some(ShellKind::Nu) && !json;
+  if wants_nu_loader {
     let _ = out.write_all(EnvPlan::default().render(ShellKind::Nu).as_bytes());
     return Ok(());
   }
 
   let _ = ctx.multishells.collect_garbage(sys::is_alive);
-  let owner = owner_pid(&sys::ancestors(2))
+  let owner = owner_pid(&sys::ancestors(PARENT_AND_GRANDPARENT))
     .or_else(sys::parent_pid)
-    .unwrap_or(0);
+    .ok_or_else(|| Failure::new(exit::ERROR, "cannot find the shell that runs rnm env"))?;
   let session = match reusable_session(ctx, owner) {
     | Some(session) => session,
     | None => ctx
@@ -59,10 +73,10 @@ pub fn env(
   plan
     .set
     .push((multishell::ENV_VAR.to_owned(), display(session.path())));
-  plan.set.push(("NVM_BIN".to_owned(), display(&bin)));
+  plan.set.push((NVM_BIN.to_owned(), display(&bin)));
   plan
     .set
-    .push(("NVM_INC".to_owned(), display(&session.include_dir())));
+    .push((NVM_INC.to_owned(), display(&session.include_dir())));
 
   let text = match shell {
     | Some(shell) if !json => plan.render(shell),
@@ -94,16 +108,16 @@ fn owner_pid(ancestors: &[sys::Process]) -> Option<u32> {
 /// owns it.
 fn reusable_session(ctx: &Context, owner: u32) -> Option<Session> {
   let session = ctx.session.as_ref()?;
-  let ours = session.owner_pid() == Some(owner)
-    && session.path().parent() == Some(ctx.multishells.dir())
-    && session.target().ok().flatten().is_some();
-  ours.then(|| session.clone())
+  let owned_by_this_shell = session.owner_pid() == Some(owner);
+  let in_links_dir = session.path().parent() == Some(ctx.multishells.dir());
+  let still_exists = session.target().ok().flatten().is_some();
+  (owned_by_this_shell && in_links_dir && still_exists).then(|| session.clone())
 }
 
 /// The version directory for a new session: the `default` alias, resolved
 /// locally. `None` (system) when there is no default or it cannot be used.
 fn default_target(ctx: &Context, err: &mut dyn Write) -> Option<PathBuf> {
-  let target = ctx.nvm_dir.aliases().get("default").ok().flatten()?;
+  let target = ctx.nvm_dir.aliases().get(DEFAULT_ALIAS).ok().flatten()?;
   let resolved = target
     .parse::<VersionSpec>()
     .map_err(|e| e.to_string())
@@ -119,17 +133,21 @@ fn default_target(ctx: &Context, err: &mut dyn Write) -> Option<PathBuf> {
 }
 
 fn infer_shell() -> Result<ShellKind, Failure> {
-  match ShellKind::infer(&sys::ancestors(8)) {
+  match ShellKind::detect() {
     | Inferred::Supported(shell) => Ok(shell),
     | Inferred::Unsupported(name) => Err(Failure::new(
       exit::ERROR,
       format!(
-        "rnm does not support the '{name}' shell yet; supported shells: bash, zsh, fish, nu, powershell"
+        "rnm does not support the '{name}' shell yet; supported shells: {}",
+        ShellKind::names()
       ),
     )),
     | Inferred::Unknown => Err(Failure::new(
       exit::ERROR,
-      "cannot detect your shell; pass it with --shell (bash, zsh, fish, nu, powershell)",
+      format!(
+        "cannot detect your shell; pass it with --shell ({})",
+        ShellKind::names()
+      ),
     )),
   }
 }
@@ -137,7 +155,9 @@ fn infer_shell() -> Result<ShellKind, Failure> {
 /// The `PATH` entry as the shell should see it. In Git Bash and MSYS2 on
 /// Windows, bash needs `/c/...` paths instead of `C:\...`.
 fn path_for_shell(ctx: &Context, shell: Option<ShellKind>, dir: &Path) -> String {
-  if cfg!(windows) && shell == Some(ShellKind::Bash) && ctx.var("MSYSTEM").is_some() {
+  let is_msys_bash =
+    cfg!(windows) && shell == Some(ShellKind::Bash) && ctx.var("MSYSTEM").is_some();
+  if is_msys_bash {
     return to_msys_path(&display(dir));
   }
   display(dir)
@@ -149,17 +169,19 @@ fn display(path: &Path) -> String {
 
 /// `C:\Users\A B\x` → `/c/Users/A B/x`. Other paths only get `/` separators.
 fn to_msys_path(path: &str) -> String {
-  let bytes = path.as_bytes();
-  let converted = path.replace('\\', "/");
-  if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
-    format!(
-      "/{}{}",
-      char::from(bytes[0].to_ascii_lowercase()),
-      &converted[2..]
-    )
-  } else {
-    converted
+  let forward_slashes = path.replace('\\', "/");
+  match split_drive(&forward_slashes) {
+    | Some((drive, rest)) => format!("/{}{rest}", drive.to_ascii_lowercase()),
+    | None => forward_slashes,
   }
+}
+
+/// `C:/x` → `('C', "/x")`.
+fn split_drive(path: &str) -> Option<(char, &str)> {
+  let mut chars = path.chars();
+  let drive = chars.next().filter(char::is_ascii_alphabetic)?;
+  let rest = chars.as_str().strip_prefix(':')?;
+  Some((drive, rest))
 }
 
 #[cfg(test)]
