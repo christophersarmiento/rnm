@@ -65,17 +65,17 @@ pub fn ancestors(limit: usize) -> Vec<Process> {
     return chain;
   };
   while chain.len() < limit && pid > 0 {
-    let Some((ppid, name)) = map.get(&pid) else {
+    let Some((parent, name)) = map.get(&pid) else {
       break;
     };
     chain.push(Process {
       pid,
       name: name.clone(),
     });
-    if *ppid == pid {
+    if *parent == pid {
       break;
     }
-    pid = *ppid;
+    pid = *parent;
   }
   chain
 }
