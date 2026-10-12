@@ -5,11 +5,11 @@ mod cli;
 use clap::Parser;
 
 fn main() {
-    let cli = cli::Cli::parse();
-    match cli.command {
-        None => {
-            // No subcommand: print help, like nvm.
-            let _ = <cli::Cli as clap::CommandFactory>::command().print_help();
-        }
-    }
+  let cli = cli::Cli::parse();
+  match cli.command {
+    | None => {
+      // No subcommand: print help, like nvm.
+      let _ = <cli::Cli as clap::CommandFactory>::command().print_help();
+    },
+  }
 }
