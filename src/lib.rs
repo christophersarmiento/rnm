@@ -7,6 +7,7 @@ pub mod fs;
 pub mod http;
 pub mod multishell;
 pub mod nvm_dir;
+pub mod remote;
 pub mod shell;
 pub mod sys;
 pub mod version;
