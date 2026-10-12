@@ -40,3 +40,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.99
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
+
+  nvm-compat:
+    name: nvm compatibility (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      NVM_VERSION: v0.40.8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch nvm
+        run: git clone --quiet --depth 1 --branch "$NVM_VERSION" https://github.com/nvm-sh/nvm.git "$RUNNER_TEMP/nvm"
+      - name: Differential tests
+        run: cargo test --locked --test nvm_compat
+        env:
+          RNM_NVM_SH: ${{ runner.temp }}/nvm/nvm.sh
