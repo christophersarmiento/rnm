@@ -44,7 +44,8 @@ fn fake_install(dir: &Path) {
   let bin = dir.join("bin");
   std::fs::create_dir_all(&bin).unwrap();
   let node = bin.join("node");
-  std::fs::write(&node, "#!/bin/sh\n").unwrap();
+  let version = dir.file_name().unwrap().to_string_lossy();
+  std::fs::write(&node, format!("#!/bin/sh\necho {version}\n")).unwrap();
   std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
@@ -221,9 +222,18 @@ fn mirror_files() -> (String, String) {
 
 /// stdout and exit code of a command line run against `root`.
 fn run(command: &mut Command, root: &Path, mirror: &str) -> (String, Option<i32>) {
+  run_with_path(command, root, mirror, "/usr/bin:/bin")
+}
+
+fn run_with_path(
+  command: &mut Command,
+  root: &Path,
+  mirror: &str,
+  path: &str,
+) -> (String, Option<i32>) {
   let output = command
     .env_clear()
-    .env("PATH", "/usr/bin:/bin")
+    .env("PATH", path)
     .env("HOME", root)
     .env("NVM_DIR", root)
     .env("NVM_NODEJS_ORG_MIRROR", mirror)
@@ -294,4 +304,148 @@ fn ls_remote_matches_nvm() {
 
   let lts_aliases = |root: &Path| NvmDir::new(root).aliases().list(true).unwrap();
   assert_eq!(lts_aliases(nvm_tmp.path()), lts_aliases(rnm_tmp.path()));
+}
+
+/// Builds the same tree (installs and aliases) under `root`.
+fn local_fixture(root: &Path) {
+  let dir = NvmDir::new(root);
+  for v in ["v18.19.0", "v18.20.4", "v20.11.1", "v22.20.0"] {
+    fake_install(&dir.node_versions_dir().join(v));
+  }
+  for v in ["v0.10.48", "v0.11.16"] {
+    fake_install(&root.join(v));
+  }
+  fake_install(&dir.iojs_versions_dir().join("v3.3.1"));
+  let aliases = dir.aliases();
+  for (name, target) in [
+    ("default", "18"),
+    ("work", "v20.11.1"),
+    ("loop-a", "loop-b"),
+    ("loop-b", "loop-a"),
+    ("missing", "v16.0.0"),
+    ("sys", "system"),
+    ("lts/hydrogen", "v18.20.4"),
+    ("lts/iron", "v20.19.0"),
+    ("lts/jod", "v22.20.0"),
+    ("lts/*", "lts/jod"),
+  ] {
+    aliases.set(name, target).unwrap();
+  }
+}
+
+/// stdout (with the tree's root replaced by `$ROOT` and nvm's name by
+/// rnm's) and the exit code.
+fn normalized((stdout, code): (String, Option<i32>), root: &Path) -> (String, Option<i32>) {
+  let text = stdout
+    .replace(&root.display().to_string(), "$ROOT")
+    .replace("`nvm alias", "`rnm alias");
+  (text, code)
+}
+
+#[test]
+fn local_commands_match_nvm() {
+  let Some(nvm_sh) = nvm_sh() else {
+    eprintln!("skipped: set RNM_NVM_SH to run");
+    return;
+  };
+  let nvm_tmp = tempfile::tempdir().unwrap();
+  let rnm_tmp = tempfile::tempdir().unwrap();
+  let (nvm_root, rnm_root) = (nvm_tmp.path(), rnm_tmp.path());
+  local_fixture(nvm_root);
+  local_fixture(rnm_root);
+  let no_mirror = "http://127.0.0.1:9/dist";
+
+  let steps: &[&[&str]] = &[
+    &["ls", "--no-colors"],
+    &["ls", "--no-colors", "--no-alias"],
+    &["ls", "--no-colors", "18"],
+    &["ls", "--no-colors", "v18.20"],
+    &["ls", "--no-colors", "default"],
+    &["ls", "--no-colors", "lts/*"],
+    &["ls", "--no-colors", "iojs"],
+    &["ls", "--no-colors", "nope"],
+    &["alias", "--no-colors"],
+    &["alias", "--no-colors", "lo"],
+    &["alias", "--no-colors", "stable"],
+    &["alias", "--no-colors", "j"],
+    &["alias", "lts/jod"],
+    &["alias", "--no-colors", "pinned", "22"],
+    &["alias", "--no-colors", "ghost", "99"],
+    &["alias", "--no-colors"],
+    &["unalias", "pinned"],
+    &["unalias", "nope"],
+    &["unalias", "stable"],
+    &["which", "18"],
+    &["which", "default"],
+    &["which", "iojs"],
+    &["which", "nope"],
+    &["which", "loop-a"],
+  ];
+  let mut mismatches = Vec::new();
+  for args in steps {
+    let nvm = run(
+      Command::new("bash")
+        .arg("-c")
+        .arg(r#"nvm_sh="$1"; shift; . "$nvm_sh" --no-use >/dev/null 2>&1; nvm "$@" 2>/dev/null"#)
+        .arg("bash")
+        .arg(&nvm_sh)
+        .args(*args),
+      nvm_root,
+      no_mirror,
+    );
+    let rnm = run(Command::new(RNM).args(*args), rnm_root, no_mirror);
+    let (nvm, rnm) = (normalized(nvm, nvm_root), normalized(rnm, rnm_root));
+    if nvm != rnm {
+      mismatches.push(format!(
+        "rnm {}\n--- nvm (exit {:?})\n{}--- rnm (exit {:?})\n{}",
+        args.join(" "),
+        nvm.1,
+        nvm.0,
+        rnm.1,
+        rnm.0
+      ));
+    }
+  }
+  let active_steps: &[&[&str]] = &[
+    &["ls", "--no-colors"],
+    &["alias", "--no-colors"],
+    &["which", "current"],
+  ];
+  for args in active_steps {
+    let path_with = |root: &Path| {
+      format!(
+        "{}/versions/node/v20.11.1/bin:/usr/bin:/bin",
+        root.display()
+      )
+    };
+    let nvm = run_with_path(
+      Command::new("bash")
+        .arg("-c")
+        .arg(r#"nvm_sh="$1"; shift; . "$nvm_sh" --no-use >/dev/null 2>&1; nvm "$@" 2>/dev/null"#)
+        .arg("bash")
+        .arg(&nvm_sh)
+        .args(*args),
+      nvm_root,
+      no_mirror,
+      &path_with(nvm_root),
+    );
+    let rnm = run_with_path(
+      Command::new(RNM).args(*args),
+      rnm_root,
+      no_mirror,
+      &path_with(rnm_root),
+    );
+    let (nvm, rnm) = (normalized(nvm, nvm_root), normalized(rnm, rnm_root));
+    if nvm != rnm {
+      mismatches.push(format!(
+        "rnm {} (v20.11.1 active)\n--- nvm (exit {:?})\n{}--- rnm (exit {:?})\n{}",
+        args.join(" "),
+        nvm.1,
+        nvm.0,
+        rnm.1,
+        rnm.0
+      ));
+    }
+  }
+  assert!(mismatches.is_empty(), "\n{}", mismatches.join("\n"));
 }
