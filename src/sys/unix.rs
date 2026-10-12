@@ -33,6 +33,31 @@ pub fn is_alive(pid: u32) -> bool {
   exists || exists_but_not_ours
 }
 
+/// Asks the kernel whether this process runs under Rosetta 2. The sysctl
+/// does not exist on Intel Macs, which counts as "not translated".
+#[cfg(target_os = "macos")]
+pub fn is_translated() -> bool {
+  let mut translated: libc::c_int = 0;
+  let mut size = std::mem::size_of::<libc::c_int>();
+  // SAFETY: the name is NUL-terminated, and `translated`/`size` describe a
+  // valid, writable c_int buffer.
+  let status = unsafe {
+    libc::sysctlbyname(
+      c"sysctl.proc_translated".as_ptr(),
+      (&raw mut translated).cast(),
+      &raw mut size,
+      std::ptr::null_mut(),
+      0,
+    )
+  };
+  status == 0 && translated == 1
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn is_translated() -> bool {
+  false
+}
+
 pub fn ancestors(limit: usize) -> Vec<Process> {
   let mut chain = Vec::new();
   let mut pid = std::os::unix::process::parent_id();

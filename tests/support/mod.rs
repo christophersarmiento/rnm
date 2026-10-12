@@ -35,7 +35,7 @@ pub type Seen = Arc<Mutex<Vec<Request>>>;
 pub struct Reply {
   pub status: u16,
   pub headers: Vec<(&'static str, String)>,
-  pub body: String,
+  pub body: Vec<u8>,
 }
 
 impl Reply {
@@ -45,7 +45,17 @@ impl Reply {
     Self {
       status: 200,
       headers: vec![("ETag", "\"v1\"".to_owned())],
-      body: body.to_owned(),
+      body: body.as_bytes().to_vec(),
+    }
+  }
+
+  /// 200 with a binary `body` and its length, like a static file server.
+  #[must_use]
+  pub fn file(body: &[u8]) -> Self {
+    Self {
+      status: 200,
+      headers: Vec::new(),
+      body: body.to_vec(),
     }
   }
 
@@ -55,7 +65,7 @@ impl Reply {
     Self {
       status: 302,
       headers: vec![("Location", location)],
-      body: String::new(),
+      body: Vec::new(),
     }
   }
 
@@ -65,7 +75,7 @@ impl Reply {
     Self {
       status,
       headers: Vec::new(),
-      body: String::new(),
+      body: Vec::new(),
     }
   }
 }
@@ -149,5 +159,6 @@ fn write_reply(mut stream: TcpStream, reply: &Reply) {
   for (name, value) in &reply.headers {
     let _ = write!(head, "{name}: {value}\r\n");
   }
-  let _ = stream.write_all(format!("{head}\r\n{}", reply.body).as_bytes());
+  let _ = stream.write_all(format!("{head}\r\n").as_bytes());
+  let _ = stream.write_all(&reply.body);
 }

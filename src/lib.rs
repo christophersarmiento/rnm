@@ -5,8 +5,10 @@
 pub mod commands;
 pub mod fs;
 pub mod http;
+pub mod install;
 pub mod multishell;
 pub mod nvm_dir;
+pub mod platform;
 pub mod remote;
 pub mod shell;
 pub mod sys;
