@@ -4,107 +4,15 @@
 //! for "the mirror" and "some other host" (such as a CDN a mirror redirects
 //! to). Each server records which requests carried an `Authorization` header.
 
-use std::ffi::OsString;
-use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Read, Write as _};
-use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+mod support;
 
-use rnm::http::{Client, HttpError, Mirror, Url};
+use std::ffi::OsString;
+use std::io::Read;
+
+use rnm::http::{Client, Conditional, HttpError, Mirror, Url};
+use support::{Reply, Seen, serve, unused_port};
 
 const TOKEN: &str = "Bearer s3cret";
-
-/// What one request looked like: its path and its `Authorization` header.
-type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
-
-/// A canned response.
-struct Reply {
-  status: u16,
-  headers: Vec<(&'static str, String)>,
-  body: String,
-}
-
-impl Reply {
-  fn ok(body: &str) -> Self {
-    Self {
-      status: 200,
-      headers: vec![("ETag", "\"v1\"".to_owned())],
-      body: body.to_owned(),
-    }
-  }
-
-  fn redirect(location: String) -> Self {
-    Self {
-      status: 302,
-      headers: vec![("Location", location)],
-      body: String::new(),
-    }
-  }
-
-  fn status(status: u16) -> Self {
-    Self {
-      status,
-      headers: Vec::new(),
-      body: String::new(),
-    }
-  }
-}
-
-/// Starts a server that answers with `route(path, authorization)`. Returns
-/// its base URL and the log of requests.
-fn serve(route: impl Fn(&str, Option<&str>) -> Reply + Send + 'static) -> (String, Seen) {
-  let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-  let base = format!("http://{}", listener.local_addr().unwrap());
-  let seen: Seen = Arc::default();
-  let log = Arc::clone(&seen);
-  std::thread::spawn(move || {
-    for stream in listener.incoming().flatten() {
-      let (path, authorization) = read_request(&stream);
-      log
-        .lock()
-        .unwrap()
-        .push((path.clone(), authorization.clone()));
-      write_reply(stream, &route(&path, authorization.as_deref()));
-    }
-  });
-  (base, seen)
-}
-
-fn read_request(stream: &TcpStream) -> (String, Option<String>) {
-  let mut reader = BufReader::new(stream);
-  let mut request_line = String::new();
-  reader.read_line(&mut request_line).unwrap();
-  let path = request_line
-    .split_whitespace()
-    .nth(1)
-    .unwrap_or_default()
-    .to_owned();
-  let mut authorization = None;
-  loop {
-    let mut line = String::new();
-    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
-      break;
-    }
-    if let Some((name, value)) = line.split_once(':')
-      && name.eq_ignore_ascii_case("authorization")
-    {
-      authorization = Some(value.trim().to_owned());
-    }
-  }
-  (path, authorization)
-}
-
-fn write_reply(mut stream: TcpStream, reply: &Reply) {
-  let mut head = format!(
-    "HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n",
-    reply.status,
-    reply.body.len()
-  );
-  for (name, value) in &reply.headers {
-    let _ = write!(head, "{name}: {value}\r\n");
-  }
-  let _ = stream.write_all(format!("{head}\r\n{}", reply.body).as_bytes());
-}
 
 fn mirror_client(mirror_url: &str, token: Option<&str>) -> Client {
   let vars: Vec<(&str, String)> = [
@@ -136,13 +44,13 @@ fn authorization_for(seen: &Seen, path: &str) -> Option<String> {
     .lock()
     .unwrap()
     .iter()
-    .find(|(p, _)| p == path)
-    .and_then(|(_, auth)| auth.clone())
+    .find(|request| request.path == path)
+    .and_then(|request| request.header("authorization").map(str::to_owned))
 }
 
 #[test]
 fn sends_credential_to_the_mirror_and_reads_etag() {
-  let (mirror, seen) = serve(|_, _| Reply::ok("[]"));
+  let (mirror, seen) = serve(|_| Reply::ok("[]"));
   let client = mirror_client(&format!("{mirror}/dist"), Some(TOKEN));
   let (body, etag) = get(&client, &format!("{mirror}/dist/index.json")).unwrap();
   assert_eq!(body, "[]");
@@ -155,7 +63,7 @@ fn sends_credential_to_the_mirror_and_reads_etag() {
 
 #[test]
 fn keeps_credential_on_same_scope_redirects() {
-  let (mirror, seen) = serve(|path, _| match path {
+  let (mirror, seen) = serve(|request| match request.path.as_str() {
     | "/dist/latest" => Reply::redirect("/dist/v20/index.json".to_owned()),
     | _ => Reply::ok("ok"),
   });
@@ -173,9 +81,9 @@ fn keeps_credential_on_same_scope_redirects() {
 
 #[test]
 fn drops_credential_when_a_redirect_leaves_the_scope() {
-  let (cdn, cdn_seen) = serve(|_, _| Reply::ok("tarball"));
+  let (cdn, cdn_seen) = serve(|_| Reply::ok("tarball"));
   let cdn_file = format!("{cdn}/node.tar.xz");
-  let (mirror, seen) = serve(move |path, _| match path {
+  let (mirror, seen) = serve(move |request| match request.path.as_str() {
     | "/dist/to-cdn" => Reply::redirect(cdn_file.clone()),
     | "/dist/to-outside-path" => Reply::redirect("/private/x".to_owned()),
     | _ => Reply::ok("ok"),
@@ -206,8 +114,8 @@ fn drops_credential_when_a_redirect_leaves_the_scope() {
 
 #[test]
 fn never_sends_credential_outside_the_mirror() {
-  let (other, seen) = serve(|_, _| Reply::ok("ok"));
-  let (mirror, _) = serve(|_, _| Reply::ok("ok"));
+  let (other, seen) = serve(|_| Reply::ok("ok"));
+  let (mirror, _) = serve(|_| Reply::ok("ok"));
   let client = mirror_client(&format!("{mirror}/dist"), Some(TOKEN));
   get(&client, &format!("{other}/dist/index.json")).unwrap();
   assert_eq!(authorization_for(&seen, "/dist/index.json"), None);
@@ -215,11 +123,14 @@ fn never_sends_credential_outside_the_mirror() {
 
 #[test]
 fn explains_auth_failures() {
-  let (mirror, _) = serve(|path, authorization| match (path, authorization) {
-    | ("/dist/forbidden", _) => Reply::status(403),
-    | (_, Some(TOKEN)) => Reply::ok("ok"),
-    | _ => Reply::status(401),
-  });
+  let (mirror, _) =
+    serve(
+      |request| match (request.path.as_str(), request.header("authorization")) {
+        | ("/dist/forbidden", _) => Reply::status(403),
+        | (_, Some(TOKEN)) => Reply::ok("ok"),
+        | _ => Reply::status(401),
+      },
+    );
   let url = format!("{mirror}/dist/index.json");
 
   let error = get(&mirror_client(&format!("{mirror}/dist"), None), &url).unwrap_err();
@@ -252,7 +163,7 @@ fn explains_auth_failures() {
 
 #[test]
 fn reports_missing_files_and_redirect_loops() {
-  let (mirror, _) = serve(|path, _| match path {
+  let (mirror, _) = serve(|request| match request.path.as_str() {
     | "/dist/loop" => Reply::redirect("/dist/loop".to_owned()),
     | "/dist/nowhere" => Reply::redirect("ftp://elsewhere/".to_owned()),
     | "/dist/broken" => Reply::status(502),
@@ -278,11 +189,7 @@ fn reports_missing_files_and_redirect_loops() {
 
 #[test]
 fn reports_connection_failures() {
-  let unused_port = TcpListener::bind("127.0.0.1:0")
-    .unwrap()
-    .local_addr()
-    .unwrap()
-    .port();
+  let unused_port = unused_port();
   let client = mirror_client(&format!("http://127.0.0.1:{unused_port}/dist"), None);
   let error = get(
     &client,
@@ -290,4 +197,41 @@ fn reports_connection_failures() {
   )
   .unwrap_err();
   assert!(matches!(error, HttpError::Transport { .. }), "{error}");
+}
+
+#[test]
+fn revalidates_with_etag() {
+  let (mirror, seen) = serve(|request| match request.header("if-none-match") {
+    | Some("\"v1\"") => Reply::status(304),
+    | _ => Reply::ok("fresh"),
+  });
+  let client = mirror_client(&format!("{mirror}/dist"), Some(TOKEN));
+  let url = Url::parse(&format!("{mirror}/dist/index.json")).unwrap();
+
+  let Conditional::Modified(mut response) = client.get_if_none_match(&url, None).unwrap() else {
+    panic!("expected a full response without an ETag");
+  };
+  let mut body = String::new();
+  response.body.read_to_string(&mut body).unwrap();
+  assert_eq!(body, "fresh");
+
+  let revalidated = client
+    .get_if_none_match(&url, response.etag.as_deref())
+    .unwrap();
+  assert!(matches!(revalidated, Conditional::NotModified));
+  let seen = seen.lock().unwrap();
+  assert_eq!(seen[0].header("if-none-match"), None);
+  assert_eq!(seen[1].header("if-none-match"), Some("\"v1\""));
+  assert_eq!(seen[1].header("authorization"), Some(TOKEN));
+}
+
+#[test]
+fn unexpected_not_modified_is_an_error() {
+  let (mirror, _) = serve(|_| Reply::status(304));
+  let client = mirror_client(&format!("{mirror}/dist"), None);
+  let error = get(&client, &format!("{mirror}/dist/index.json")).unwrap_err();
+  assert!(
+    matches!(error, HttpError::Status { status: 304, .. }),
+    "{error}"
+  );
 }

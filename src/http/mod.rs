@@ -49,6 +49,14 @@ pub struct Response {
   pub body: Box<dyn Read + Send>,
 }
 
+/// The outcome of a conditional request.
+pub enum Conditional {
+  /// The resource changed (or there was no `ETag` to compare with).
+  Modified(Response),
+  /// 304: the copy identified by the `ETag` is still current.
+  NotModified,
+}
+
 /// Why a request failed.
 #[derive(Debug)]
 pub enum HttpError {
@@ -150,6 +158,26 @@ impl Client {
   /// See [`HttpError`]. Error messages never include credentials or URL
   /// user information.
   pub fn get(&self, url: &Url) -> Result<Response, HttpError> {
+    match self.send(url, None)? {
+      | Conditional::Modified(response) => Ok(response),
+      | Conditional::NotModified => Err(HttpError::Status {
+        url: url.to_string(),
+        status: StatusCode::NOT_MODIFIED.as_u16(),
+      }),
+    }
+  }
+
+  /// Sends a GET request with `If-None-Match: <etag>` and follows
+  /// redirects. Without an `etag` this is a plain [`Client::get`].
+  ///
+  /// # Errors
+  ///
+  /// See [`HttpError`].
+  pub fn get_if_none_match(&self, url: &Url, etag: Option<&str>) -> Result<Conditional, HttpError> {
+    self.send(url, etag)
+  }
+
+  fn send(&self, url: &Url, etag: Option<&str>) -> Result<Conditional, HttpError> {
     let mut url = url.clone();
     for _ in 0..=MAX_REDIRECTS {
       let credential = self
@@ -163,13 +191,21 @@ impl Client {
           credential.value.header_value().clone(),
         );
       }
+      if let Some(etag) = etag {
+        request = request.header(header::IF_NONE_MATCH, etag);
+      }
       let response = request.call().map_err(|error| HttpError::Transport {
         url: url.to_string(),
         message: error.to_string(),
       })?;
 
       let status = response.status();
-      if status.is_redirection() {
+      let answers_conditional = etag.is_some() && status == StatusCode::NOT_MODIFIED;
+      if answers_conditional {
+        return Ok(Conditional::NotModified);
+      }
+      let is_redirect = status.is_redirection() && status != StatusCode::NOT_MODIFIED;
+      if is_redirect {
         let location = header_text(&response, header::LOCATION).unwrap_or_default();
         url = url.join(&location).map_err(|_| HttpError::BadRedirect {
           url: url.to_string(),
@@ -195,11 +231,11 @@ impl Client {
           url: url.to_string(),
           status: status.as_u16(),
         }),
-        | _ => Ok(Response {
+        | _ => Ok(Conditional::Modified(Response {
           etag: header_text(&response, header::ETAG),
           body: Box::new(response.into_body().into_reader()),
           url,
-        }),
+        })),
       };
     }
     Err(HttpError::TooManyRedirects {
