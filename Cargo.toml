@@ -1,0 +1,28 @@
+[package]
+name = "rnm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "A fast, lightweight Node.js version manager compatible with nvm"
+license = "GPL-3.0-only"
+repository = "https://github.com/christophersarmiento/rnm"
+readme = false
+keywords = ["node", "nodejs", "nvm", "version-manager"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+clap = { version = "4.6.7", default-features = false, features = ["std", "help", "usage", "error-context", "suggestions", "derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
