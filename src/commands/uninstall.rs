@@ -103,16 +103,15 @@ fn remove_aliases_to(
   installed: &InstalledVersion,
   out: &mut dyn Write,
 ) -> Result<(), Failure> {
-  let alias_failure = |e: crate::nvm_dir::AliasError| Failure::new(exit::ERROR, e.to_string());
   let aliases = ctx.nvm_dir.aliases();
   let full = installed.to_string();
   let without_prefix = match installed.flavor {
     | Flavor::Node => full.strip_prefix('v').unwrap_or(&full).to_owned(),
     | Flavor::Iojs => full.clone(),
   };
-  for (name, target) in aliases.list(false).map_err(alias_failure)? {
+  for (name, target) in aliases.list(false)? {
     if target == full || target == without_prefix {
-      aliases.remove(&name).map_err(alias_failure)?;
+      aliases.remove(&name)?;
       say(
         out,
         format_args!("Deleted alias {name} - restore it with `rnm alias \"{name}\" \"{target}\"`"),

@@ -6,9 +6,7 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
-use rnm::commands::{
-  self, Context, Failure, InstallOptions, LsRemoteOptions, Progress, UseOptions,
-};
+use rnm::commands::{self, Context, Failure};
 
 use crate::cli::{Cli, Command};
 
@@ -34,71 +32,28 @@ fn run(command: Command) -> Result<(), Failure> {
   let ctx = Context::from_env()?;
   let stdout = std::io::stdout();
   let mut out = stdout.lock();
+  let mut err = std::io::stderr();
   match command {
-    | Command::Env { shell, json } => {
-      commands::env(&ctx, shell, json, &mut out, &mut std::io::stderr())
-    },
-    | Command::Use {
-      spec,
-      lts,
-      silent,
-      silent_if_unchanged,
-      save,
-    } => {
-      let opts = UseOptions {
-        version: spec,
-        lts,
-        silent,
-        silent_if_unchanged,
-        save,
-      };
-      commands::use_version(&ctx, &opts, &mut out)
-    },
+    | Command::Env { shell, json } => commands::env(&ctx, shell, json, &mut out, &mut err),
+    | Command::Use(args) => commands::use_version(&ctx, &args.into(), &mut out),
     | Command::Current => commands::current(&ctx, &mut out),
-    | Command::Install {
-      spec,
-      lts,
-      default,
-      alias,
-      save,
-      no_use,
-      no_progress,
-      binary_only: _,
-    } => {
-      let opts = InstallOptions {
-        version: spec,
-        lts,
-        default,
-        alias,
-        save,
-        no_use,
-        progress: if no_progress || !std::io::stderr().is_terminal() {
-          Progress::Hidden
-        } else {
-          Progress::Bar
-        },
-      };
-      commands::install(&ctx, &opts, &mut out, &mut std::io::stderr())
+    | Command::Install(args) => commands::install(&ctx, &args.into(), &mut out, &mut err),
+    | Command::Uninstall { spec, lts } => {
+      commands::uninstall(&ctx, spec.as_deref(), lts.as_deref(), &mut out, &mut err)
     },
-    | Command::Uninstall { spec, lts } => commands::uninstall(
-      &ctx,
-      spec.as_deref(),
-      lts.as_deref(),
-      &mut out,
-      &mut std::io::stderr(),
-    ),
-    | Command::LsRemote {
-      pattern,
-      lts,
+    | Command::Ls(args) => commands::ls(&ctx, &args.into(), &mut out),
+    | Command::Alias {
+      name,
+      target,
       no_colors,
     } => {
-      let opts = LsRemoteOptions {
-        pattern,
-        lts,
-        no_colors,
-        terminal: std::io::stdout().is_terminal(),
-      };
-      commands::ls_remote(&ctx, &opts, &mut out, &mut std::io::stderr())
+      let terminal = std::io::stdout().is_terminal();
+      let (name, target) = (name.as_deref(), target.as_deref());
+      commands::alias(&ctx, name, target, no_colors, terminal, &mut out, &mut err)
     },
+    | Command::Unalias { name } => commands::unalias(&ctx, &name, &mut out, &mut err),
+    | Command::Which { spec, silent } => commands::which(&ctx, spec.as_deref(), silent, &mut out),
+    | Command::Exec(args) => commands::exec(&ctx, &args.into(), &mut out),
+    | Command::LsRemote(args) => commands::ls_remote(&ctx, &args.into(), &mut out, &mut err),
   }
 }

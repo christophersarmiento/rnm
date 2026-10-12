@@ -2,29 +2,38 @@
 //! returns a [`Failure`] with nvm's exit code on error. `main.rs` only parses
 //! arguments and maps failures to exit codes.
 
+mod alias;
 mod colors;
 mod current;
 mod env;
+mod exec;
 mod install;
+mod listing;
+mod ls;
 mod ls_remote;
 mod uninstall;
 mod use_version;
+mod which;
 
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+pub use alias::{alias, unalias};
 pub use current::current;
 pub use env::env;
+pub use exec::{ExecOptions, exec};
 pub use install::{InstallOptions, Progress, install};
+pub use ls::{LsOptions, ls};
 pub use ls_remote::{LsRemoteOptions, ls_remote};
 pub use uninstall::uninstall;
 pub use use_version::{UseOptions, use_version};
+pub use which::which;
 
 use crate::http::{Client, Mirror};
 use crate::multishell::{self, Multishells, Session};
-use crate::nvm_dir::{NODE_EXECUTABLE, NvmDir, global_modules_dir, is_executable};
+use crate::nvm_dir::{AliasError, NODE_EXECUTABLE, NvmDir, global_modules_dir, is_executable};
 use crate::remote::{RemoteIndex, load_index, refresh_lts_aliases};
 
 /// What nvm prints for "no version is active".
@@ -54,6 +63,8 @@ pub mod exit {
   pub const ALIAS_LOOP: u8 = 8;
   /// No version given and none found in a version file, or usage error.
   pub const NO_VERSION: u8 = 127;
+  /// An option that is not supported in this combination.
+  pub const INVALID_OPTION: u8 = 55;
 }
 
 impl Failure {
@@ -69,6 +80,12 @@ impl Failure {
 impl fmt::Display for Failure {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.write_str(&self.message)
+  }
+}
+
+impl From<AliasError> for Failure {
+  fn from(e: AliasError) -> Self {
+    Self::new(exit::ERROR, e.to_string())
   }
 }
 
@@ -135,16 +152,21 @@ impl Context {
     self.var(key).map(|v| v.to_string_lossy().into_owned())
   }
 
+  /// `dir` is inside the install tree or a session link, so it belongs to
+  /// rnm (or nvm), not to the system.
+  #[must_use]
+  pub fn is_managed(&self, dir: &Path) -> bool {
+    dir.starts_with(self.nvm_dir.root()) || dir.starts_with(self.multishells.dir())
+  }
+
   /// The first `node` on `PATH` that is not managed by rnm: not inside the
   /// install tree and not inside a session link.
   #[must_use]
   pub fn system_node(&self) -> Option<PathBuf> {
-    let managed =
-      |dir: &Path| dir.starts_with(self.nvm_dir.root()) || dir.starts_with(self.multishells.dir());
     self
       .path
       .iter()
-      .filter(|dir| !managed(dir))
+      .filter(|dir| !self.is_managed(dir))
       .map(|dir| dir.join(NODE_EXECUTABLE))
       .find(|p| is_executable(p))
   }

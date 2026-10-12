@@ -6,22 +6,13 @@ use std::io::Write;
 
 use super::colors::{Palette, bold, paint};
 use super::current::active;
+use super::listing::{
+  NOT_AVAILABLE_LABEL, State, VERSION_WIDTH, annotation_padding, palette, version_cell,
+};
 use super::{Context, Failure, exit, remote_index, say};
 use crate::nvm_dir::Flavor;
 use crate::remote::{Release, RemoteIndex};
 use crate::version::{LTS_PREFIX, LtsSpec, SpecError, VersionReq, VersionSpec};
-
-/// What nvm prints when nothing matches.
-const NOT_AVAILABLE_LABEL: &str = "N/A";
-
-/// The width nvm pads version numbers to.
-const VERSION_WIDTH: usize = 15;
-
-/// The width after the `->` current-version marker.
-const CURRENT_VERSION_WIDTH: usize = VERSION_WIDTH - "->".len();
-
-/// The `TERM` value of terminals without color support.
-const DUMB_TERMINAL: &str = "dumb";
 
 /// Options for [`ls_remote`].
 #[derive(Clone, Debug, Default)]
@@ -43,14 +34,6 @@ struct Filter {
   lts: Option<LtsSpec>,
   /// The pattern can never match a release, such as `system` or an alias.
   matches_nothing: bool,
-}
-
-/// How a version relates to this machine.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum State {
-  Current,
-  Installed,
-  NotInstalled,
 }
 
 /// One output line.
@@ -96,8 +79,7 @@ pub fn ls_remote(
     .map(|i| i.version.to_string())
     .collect();
   let current = active(ctx)?;
-  let palette = use_colors(ctx, opts)
-    .then(|| Palette::from_nvm_colors(ctx.var_string("NVM_COLORS").as_deref()));
+  let palette = palette(ctx, opts.no_colors, opts.terminal);
   let latest_lts = index.lts_lines();
 
   for release in rows {
@@ -186,41 +168,14 @@ impl Filter {
   }
 }
 
-/// nvm colors a list only on a terminal, without `--no-colors`, and when the
-/// terminal supports colors.
-fn use_colors(ctx: &Context, opts: &LsRemoteOptions) -> bool {
-  let is_dumb_terminal = ctx.var_string("TERM").as_deref() == Some(DUMB_TERMINAL);
-  opts.terminal && !opts.no_colors && !is_dumb_terminal
-}
-
 /// Formats a row like nvm's `nvm_print_versions`. Without colors, installed
 /// versions get a ` *` suffix and the active one a `->` prefix.
 fn format_row(row: &Row<'_>, palette: Option<&Palette>) -> String {
-  let version = row.release.version.to_string();
-  let plain = format!("{version:>VERSION_WIDTH$}");
-  let current = format!("->{version:>CURRENT_VERSION_WIDTH$}");
-  let version_cell = match (row.state, palette) {
-    | (State::Current, None) => format!("{current} *"),
-    | (State::Installed, None) => format!("{plain} *"),
-    | (
-      State::Current,
-      Some(Palette {
-        current: Some(code),
-        ..
-      }),
-    ) => paint(Some(code), &current),
-    | (State::Installed, Some(palette)) => paint(palette.installed, &plain),
-    | (State::Current | State::NotInstalled, _) => plain,
-  };
+  let version_cell = version_cell(&row.release.version.to_string(), row.state, palette);
   let Some(codename) = &row.release.lts else {
     return version_cell;
   };
-  let is_installed = row.state != State::NotInstalled;
-  let padding = if palette.is_none() && is_installed {
-    ""
-  } else {
-    "  "
-  };
+  let padding = annotation_padding(row.state, palette);
   let lts_cell = if row.is_latest_lts {
     let color = palette.and_then(|p| bold(p.current));
     paint(color.as_deref(), &format!(" (Latest LTS: {codename})"))

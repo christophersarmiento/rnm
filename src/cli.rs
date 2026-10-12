@@ -2,7 +2,12 @@
 //!
 //! Subcommands use nvm's names first; fnm's names are accepted as aliases.
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
+use std::io::IsTerminal;
+
+use rnm::commands::{
+  ExecOptions, InstallOptions, LsOptions, LsRemoteOptions, Progress, UseOptions,
+};
 use rnm::shell::ShellKind;
 use rnm::version::LATEST_LTS;
 
@@ -32,24 +37,7 @@ pub enum Command {
   /// Switch this shell to an installed version.
   ///
   /// Without a version, uses the nearest .nvmrc or .node-version.
-  Use {
-    /// A version (18, v20.11.1), lts/*, lts/<name>, node, system, or an
-    /// alias.
-    #[arg(value_name = "VERSION")]
-    spec: Option<String>,
-    /// Use the newest LTS, or the named LTS line with --lts=<name>.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = LATEST_LTS, value_name = "NAME")]
-    lts: Option<String>,
-    /// Print nothing on success.
-    #[arg(long)]
-    silent: bool,
-    /// Print nothing if this version is already in use.
-    #[arg(long)]
-    silent_if_unchanged: bool,
-    /// Write the version to ./.nvmrc.
-    #[arg(long, short = 'w')]
-    save: bool,
-  },
+  Use(UseArgs),
 
   /// Print the active version.
   Current,
@@ -59,33 +47,7 @@ pub enum Command {
   /// Without a version, installs the one in the nearest .nvmrc or
   /// .node-version. The first install also creates the `default` alias.
   #[command(alias = "i")]
-  Install {
-    /// A version (18, v20.11.1), lts/*, lts/<name>, or node.
-    #[arg(value_name = "VERSION")]
-    spec: Option<String>,
-    /// Install the newest LTS, or the named LTS line with --lts=<name>.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = LATEST_LTS, value_name = "NAME")]
-    lts: Option<String>,
-    /// Point the `default` alias at the requested version.
-    #[arg(long, conflicts_with = "alias")]
-    default: bool,
-    /// Point this alias at the requested version.
-    #[arg(long, require_equals = true, value_name = "NAME")]
-    alias: Option<String>,
-    /// Write the installed version to ./.nvmrc.
-    #[arg(long, short = 'w')]
-    save: bool,
-    /// Do not switch this shell to the installed version.
-    #[arg(long)]
-    no_use: bool,
-    /// Do not draw a download progress bar.
-    #[arg(long)]
-    no_progress: bool,
-    /// nvm's "binary only" flag. rnm always installs binaries, so it has no
-    /// effect.
-    #[arg(short = 'b', hide = true)]
-    binary_only: bool,
-  },
+  Install(InstallArgs),
 
   /// Remove an installed version and the aliases that point at it.
   Uninstall {
@@ -98,22 +60,210 @@ pub enum Command {
     lts: Option<String>,
   },
 
-  /// List the versions available on the mirror.
+  /// List installed versions and aliases.
+  #[command(alias = "list")]
+  Ls(LsArgs),
+
+  /// List aliases, or create one.
   ///
-  /// Also refreshes the LTS aliases (lts/*, lts/<name>) that `use` reads.
-  #[command(alias = "list-remote")]
-  LsRemote {
-    /// Only versions starting with this prefix (18, v20.1), or lts/*,
-    /// lts/<name>.
+  /// `rnm alias` lists all aliases, `rnm alias <name>` those starting with
+  /// <name>, and `rnm alias <name> <version>` points <name> at <version>.
+  Alias {
+    name: Option<String>,
     #[arg(value_name = "VERSION")]
-    pattern: Option<String>,
-    /// Only LTS versions, or one LTS line with --lts=<name>.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = LATEST_LTS, value_name = "NAME")]
-    lts: Option<String>,
+    target: Option<String>,
     /// Never color the output.
     #[arg(long)]
     no_colors: bool,
   },
+
+  /// Delete an alias.
+  Unalias { name: String },
+
+  /// Print the path of a version's node binary.
+  Which {
+    /// A version, alias, current, or system. Defaults to the nearest
+    /// .nvmrc or .node-version.
+    #[arg(value_name = "VERSION")]
+    spec: Option<String>,
+    /// Do not print which version file was used.
+    #[arg(long)]
+    silent: bool,
+  },
+
+  /// Run a command with a version's node first on PATH.
+  ///
+  /// `rnm exec 20 node app.js`. Without a version, uses the nearest .nvmrc
+  /// or .node-version.
+  Exec(ExecArgs),
+
+  /// List the versions available on the mirror.
+  ///
+  /// Also refreshes the LTS aliases (lts/*, lts/<name>) that `use` reads.
+  #[command(alias = "list-remote")]
+  LsRemote(LsRemoteArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct UseArgs {
+  /// A version (18, v20.11.1), lts/*, lts/<name>, node, system, or an
+  /// alias.
+  #[arg(value_name = "VERSION")]
+  pub spec: Option<String>,
+  /// Use the newest LTS, or the named LTS line with --lts=<name>.
+  #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = LATEST_LTS, value_name = "NAME")]
+  pub lts: Option<String>,
+  /// Print nothing on success.
+  #[arg(long)]
+  pub silent: bool,
+  /// Print nothing if this version is already in use.
+  #[arg(long)]
+  pub silent_if_unchanged: bool,
+  /// Write the version to ./.nvmrc.
+  #[arg(long, short = 'w')]
+  pub save: bool,
+}
+
+#[derive(Debug, Args)]
+#[allow(
+  clippy::struct_excessive_bools,
+  reason = "each bool is one command-line flag"
+)]
+pub struct InstallArgs {
+  /// A version (18, v20.11.1), lts/*, lts/<name>, or node.
+  #[arg(value_name = "VERSION")]
+  pub spec: Option<String>,
+  /// Install the newest LTS, or the named LTS line with --lts=<name>.
+  #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = LATEST_LTS, value_name = "NAME")]
+  pub lts: Option<String>,
+  /// Point the `default` alias at the requested version.
+  #[arg(long, conflicts_with = "alias")]
+  pub default: bool,
+  /// Point this alias at the requested version.
+  #[arg(long, require_equals = true, value_name = "NAME")]
+  pub alias: Option<String>,
+  /// Write the installed version to ./.nvmrc.
+  #[arg(long, short = 'w')]
+  pub save: bool,
+  /// Do not switch this shell to the installed version.
+  #[arg(long)]
+  pub no_use: bool,
+  /// Do not draw a download progress bar.
+  #[arg(long)]
+  pub no_progress: bool,
+  /// nvm's "binary only" flag. rnm always installs binaries, so it has no
+  /// effect.
+  #[arg(short = 'b', hide = true)]
+  pub binary_only: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct LsArgs {
+  /// Only versions matching this (18, v20.1, iojs, system, or an alias).
+  #[arg(value_name = "VERSION")]
+  pub pattern: Option<String>,
+  /// Never color the output.
+  #[arg(long)]
+  pub no_colors: bool,
+  /// Do not list aliases.
+  #[arg(long)]
+  pub no_alias: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ExecArgs {
+  /// The version to use (fnm's spelling); otherwise the first argument is
+  /// the version when it names an installed one.
+  #[arg(long, value_name = "VERSION")]
+  pub using: Option<String>,
+  /// Do not print `Running node …`.
+  #[arg(long)]
+  pub silent: bool,
+  /// [VERSION] COMMAND [ARGS]...
+  #[arg(
+    value_name = "ARGS",
+    trailing_var_arg = true,
+    allow_hyphen_values = true,
+    required = true
+  )]
+  pub args: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct LsRemoteArgs {
+  /// Only versions starting with this prefix (18, v20.1), or lts/*,
+  /// lts/<name>.
+  #[arg(value_name = "VERSION")]
+  pub pattern: Option<String>,
+  /// Only LTS versions, or one LTS line with --lts=<name>.
+  #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = LATEST_LTS, value_name = "NAME")]
+  pub lts: Option<String>,
+  /// Never color the output.
+  #[arg(long)]
+  pub no_colors: bool,
+}
+
+impl From<UseArgs> for UseOptions {
+  fn from(args: UseArgs) -> Self {
+    Self {
+      version: args.spec,
+      lts: args.lts,
+      silent: args.silent,
+      silent_if_unchanged: args.silent_if_unchanged,
+      save: args.save,
+    }
+  }
+}
+
+impl From<InstallArgs> for InstallOptions {
+  fn from(args: InstallArgs) -> Self {
+    let draws_bar = !args.no_progress && std::io::stderr().is_terminal();
+    Self {
+      version: args.spec,
+      lts: args.lts,
+      default: args.default,
+      alias: args.alias,
+      save: args.save,
+      no_use: args.no_use,
+      progress: if draws_bar {
+        Progress::Bar
+      } else {
+        Progress::Hidden
+      },
+    }
+  }
+}
+
+impl From<LsArgs> for LsOptions {
+  fn from(args: LsArgs) -> Self {
+    Self {
+      pattern: args.pattern,
+      no_colors: args.no_colors,
+      no_alias: args.no_alias,
+      terminal: std::io::stdout().is_terminal(),
+    }
+  }
+}
+
+impl From<LsRemoteArgs> for LsRemoteOptions {
+  fn from(args: LsRemoteArgs) -> Self {
+    Self {
+      pattern: args.pattern,
+      lts: args.lts,
+      no_colors: args.no_colors,
+      terminal: std::io::stdout().is_terminal(),
+    }
+  }
+}
+
+impl From<ExecArgs> for ExecOptions {
+  fn from(args: ExecArgs) -> Self {
+    Self {
+      using: args.using,
+      args: args.args,
+      silent: args.silent,
+    }
+  }
 }
 
 #[cfg(test)]

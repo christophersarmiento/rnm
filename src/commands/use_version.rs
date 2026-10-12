@@ -135,7 +135,7 @@ fn now_using(installed: &InstalledVersion) -> String {
   }
 }
 
-fn resolve_failure(spec: &VersionSpec, e: &ResolveError) -> Failure {
+pub(crate) fn resolve_failure(spec: &VersionSpec, e: &ResolveError) -> Failure {
   match e {
     | ResolveError::NotInstalled(_) => Failure::new(
       exit::NOT_AVAILABLE,
