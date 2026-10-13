@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 pub use alias::{alias, unalias};
 pub use current::current;
-pub use env::env;
+pub use env::{EnvOptions, env};
 pub use exec::{ExecOptions, exec};
 pub use install::{InstallOptions, Progress, install};
 pub use ls::{LsOptions, ls};

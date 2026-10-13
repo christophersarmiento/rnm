@@ -3,10 +3,12 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use super::install::Progress;
+use super::use_version::{UseOptions, requested_spec, switch_session};
 use super::{Context, DEFAULT_ALIAS, Failure, exit, say};
 use crate::multishell::{self, Session};
 use crate::nvm_dir::Resolved;
-use crate::shell::{EnvPlan, Inferred, ShellKind};
+use crate::shell::{CdHook, EnvPlan, Inferred, ShellKind};
 use crate::sys;
 use crate::version::VersionSpec;
 
@@ -20,6 +22,21 @@ const NVM_INC: &str = "NVM_INC";
 /// the subshell in front of it. See [`owner_pid`].
 const PARENT_AND_GRANDPARENT: usize = 2;
 
+/// Options for [`env`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EnvOptions {
+  /// The shell to generate code for. Detected from the process tree when
+  /// `None`, unless `json` is set.
+  pub shell: Option<ShellKind>,
+  /// `--json`: print the variables as JSON instead of shell code.
+  pub json: bool,
+  /// `--use-on-cd`: switch to the nearest version file's version now, and
+  /// install a hook that does it again after every directory change.
+  pub use_on_cd: Option<CdHook>,
+  /// Download progress output when the hook installs a version at startup.
+  pub progress: Progress,
+}
+
 /// Prints the shell code (or JSON) that puts this session's link on `PATH`.
 ///
 /// - A new link is created for the calling shell, pointing at the `default`
@@ -29,25 +46,32 @@ const PARENT_AND_GRANDPARENT: usize = 2;
 ///   the existing link and does not add `PATH` again.
 /// - `--shell nu` (without `--json`) prints a static loader script and
 ///   creates nothing.
+/// - `--use-on-cd` switches the link to the nearest version file's version
+///   in-process, so a new shell starts one process, not two. Problems with
+///   that file are reported on `err` and do not fail the command.
 ///
 /// # Errors
 ///
 /// Fails if the shell cannot be determined or the link cannot be created.
 pub fn env(
   ctx: &Context,
-  shell: Option<ShellKind>,
-  json: bool,
+  opts: &EnvOptions,
   out: &mut dyn Write,
   err: &mut dyn Write,
 ) -> Result<(), Failure> {
-  let shell = match (shell, json) {
+  let json = opts.json;
+  let shell = match (opts.shell, json) {
     | (Some(shell), _) => Some(shell),
     | (None, true) => None,
     | (None, false) => Some(infer_shell()?),
   };
   let wants_nu_loader = shell == Some(ShellKind::Nu) && !json;
   if wants_nu_loader {
-    let _ = out.write_all(EnvPlan::default().render(ShellKind::Nu).as_bytes());
+    let loader = EnvPlan {
+      use_on_cd: opts.use_on_cd,
+      ..EnvPlan::default()
+    };
+    let _ = out.write_all(loader.render(ShellKind::Nu).as_bytes());
     return Ok(());
   }
 
@@ -62,8 +86,16 @@ pub fn env(
       .create(owner, default_target(ctx, err).as_deref())?,
   };
 
+  if let Some(cd_hook) = opts.use_on_cd {
+    let hook = UseOptions::hook(cd_hook.install_if_missing, opts.progress);
+    use_version_file(ctx, &session, &hook, err);
+  }
+
   let bin = session.bin_dir();
-  let mut plan = EnvPlan::default();
+  let mut plan = EnvPlan {
+    use_on_cd: opts.use_on_cd,
+    ..EnvPlan::default()
+  };
   if !ctx.path.iter().any(|dir| dir == &bin) {
     plan.path_prepend.push(path_for_shell(ctx, shell, &bin));
   }
@@ -81,6 +113,20 @@ pub fn env(
   };
   let _ = out.write_all(text.as_bytes());
   Ok(())
+}
+
+/// Does what the `--use-on-cd` hook would do in this directory. Messages go
+/// to `err`, because `out` is evaluated by the shell.
+fn use_version_file(ctx: &Context, session: &Session, hook: &UseOptions, err: &mut dyn Write) {
+  let mut messages = Vec::new();
+  let result = requested_spec(ctx, hook, err).and_then(|spec| match spec {
+    | Some(spec) => switch_session(ctx, session, &spec, hook, &mut messages, err),
+    | None => Ok(()),
+  });
+  let _ = err.write_all(&messages);
+  if let Err(failure) = result {
+    say(err, failure.message);
+  }
 }
 
 /// The PID of the shell that runs `rnm env`, which owns the session link.

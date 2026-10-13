@@ -6,9 +6,9 @@ use clap::{Args, Parser, Subcommand};
 use std::io::IsTerminal;
 
 use rnm::commands::{
-  ExecOptions, InstallOptions, LsOptions, LsRemoteOptions, Progress, UseOptions,
+  EnvOptions, ExecOptions, InstallOptions, LsOptions, LsRemoteOptions, Progress, UseOptions,
 };
-use rnm::shell::ShellKind;
+use rnm::shell::{CdHook, ShellKind};
 use rnm::version::LATEST_LTS;
 
 #[derive(Debug, Parser)]
@@ -24,15 +24,7 @@ pub enum Command {
   ///
   /// Add the output to your shell's startup file, for example
   /// `eval "$(rnm env --shell bash)"` in ~/.bashrc.
-  Env {
-    /// The shell to generate code for. Detected from the parent process
-    /// when omitted.
-    #[arg(long, value_enum)]
-    shell: Option<ShellKind>,
-    /// Print the environment variables as JSON instead of shell code.
-    #[arg(long)]
-    json: bool,
-  },
+  Env(EnvArgs),
 
   /// Switch this shell to an installed version.
   ///
@@ -105,6 +97,29 @@ pub enum Command {
 }
 
 #[derive(Debug, Args)]
+pub struct EnvArgs {
+  /// The shell to generate code for. Detected from the parent process
+  /// when omitted.
+  #[arg(long, value_enum)]
+  pub shell: Option<ShellKind>,
+  /// Print the environment variables as JSON instead of shell code.
+  #[arg(long)]
+  pub json: bool,
+  /// Switch versions automatically, like nvm's README recipes: after every
+  /// directory change (and now), use the nearest .nvmrc or .node-version,
+  /// in this directory or a parent. Without one, use the `default` alias.
+  #[arg(long)]
+  pub use_on_cd: bool,
+  /// With --use-on-cd: install a missing version instead of reporting it.
+  #[arg(long, requires = "use_on_cd")]
+  pub install_if_missing: bool,
+}
+
+#[derive(Debug, Args)]
+#[allow(
+  clippy::struct_excessive_bools,
+  reason = "each bool is one command-line flag"
+)]
 pub struct UseArgs {
   /// A version (18, v20.11.1), lts/*, lts/<name>, node, system, or an
   /// alias.
@@ -122,6 +137,13 @@ pub struct UseArgs {
   /// Write the version to ./.nvmrc.
   #[arg(long, short = 'w')]
   pub save: bool,
+  /// Install the version first if it is not installed.
+  #[arg(long)]
+  pub install_if_missing: bool,
+  /// Run by the `env --use-on-cd` hook: without a version file, switch to
+  /// the `default` alias if there is one.
+  #[arg(long, hide = true, conflicts_with_all = ["spec", "lts", "save"])]
+  pub from_hook: bool,
 }
 
 #[derive(Debug, Args)]
@@ -203,6 +225,28 @@ pub struct LsRemoteArgs {
   pub no_colors: bool,
 }
 
+/// A progress bar when stderr is a terminal, unless `--no-progress`.
+fn progress(no_progress: bool) -> Progress {
+  if !no_progress && std::io::stderr().is_terminal() {
+    Progress::Bar
+  } else {
+    Progress::Hidden
+  }
+}
+
+impl From<EnvArgs> for EnvOptions {
+  fn from(args: EnvArgs) -> Self {
+    Self {
+      shell: args.shell,
+      json: args.json,
+      use_on_cd: args.use_on_cd.then_some(CdHook {
+        install_if_missing: args.install_if_missing,
+      }),
+      progress: progress(false),
+    }
+  }
+}
+
 impl From<UseArgs> for UseOptions {
   fn from(args: UseArgs) -> Self {
     Self {
@@ -211,13 +255,15 @@ impl From<UseArgs> for UseOptions {
       silent: args.silent,
       silent_if_unchanged: args.silent_if_unchanged,
       save: args.save,
+      from_hook: args.from_hook,
+      install_if_missing: args.install_if_missing,
+      progress: progress(false),
     }
   }
 }
 
 impl From<InstallArgs> for InstallOptions {
   fn from(args: InstallArgs) -> Self {
-    let draws_bar = !args.no_progress && std::io::stderr().is_terminal();
     Self {
       version: args.spec,
       lts: args.lts,
@@ -225,11 +271,7 @@ impl From<InstallArgs> for InstallOptions {
       alias: args.alias,
       save: args.save,
       no_use: args.no_use,
-      progress: if draws_bar {
-        Progress::Bar
-      } else {
-        Progress::Hidden
-      },
+      progress: progress(args.no_progress),
     }
   }
 }

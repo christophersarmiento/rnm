@@ -92,7 +92,7 @@ pub fn install(
       }
     },
   };
-  finish(ctx, opts, &requested, &installed, out)
+  finish(ctx, opts, &requested, &installed, out, err)
 }
 
 /// The spec as the user gave it: `--lts`, the argument, or the version file.
@@ -225,13 +225,14 @@ fn finish(
   requested: &str,
   installed: &InstalledVersion,
   out: &mut dyn Write,
+  err: &mut dyn Write,
 ) -> Result<(), Failure> {
   if ctx.session.is_some() && !opts.no_use {
     let use_opts = UseOptions {
       version: Some(installed.to_string()),
       ..UseOptions::default()
     };
-    use_version(ctx, &use_opts, out)?;
+    use_version(ctx, &use_opts, out, err)?;
   }
 
   let aliases = ctx.nvm_dir.aliases();

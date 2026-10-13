@@ -3,14 +3,19 @@
 use std::io::Write;
 use std::path::Path;
 
-use super::{Context, Failure, SYSTEM_LABEL, exit, npm_version, say};
-use crate::multishell::Target;
+use super::install::{InstallOptions, Progress, install};
+use super::{Context, DEFAULT_ALIAS, Failure, SYSTEM_LABEL, exit, npm_version, say};
+use crate::multishell::{Session, Target};
 use crate::nvm_dir::{InstalledVersion, ResolveError, Resolved};
 use crate::shell::{Inferred, ShellKind};
 use crate::version::{LTS_PREFIX, VersionFile, VersionFileKind, VersionSpec, find_version_file};
 
 /// Options for [`use_version`].
 #[derive(Clone, Debug, Default)]
+#[allow(
+  clippy::struct_excessive_bools,
+  reason = "each bool is one command-line flag"
+)]
 pub struct UseOptions {
   /// The version spec. When `None`, the nearest version file is used.
   pub version: Option<String>,
@@ -23,6 +28,27 @@ pub struct UseOptions {
   pub silent_if_unchanged: bool,
   /// `--save`: write the resolved version to `./.nvmrc`.
   pub save: bool,
+  /// `--from-hook`: run by the `--use-on-cd` hook after a directory change.
+  /// Implies `silent_if_unchanged`. Without a version file, switches to the
+  /// `default` alias, or does nothing when there is none.
+  pub from_hook: bool,
+  /// `--install-if-missing`: install the version when it is not installed.
+  pub install_if_missing: bool,
+  /// Download progress output for `install_if_missing`.
+  pub progress: Progress,
+}
+
+impl UseOptions {
+  /// The options of the `--use-on-cd` hook.
+  #[must_use]
+  pub fn hook(install_if_missing: bool, progress: Progress) -> Self {
+    Self {
+      from_hook: true,
+      install_if_missing,
+      progress,
+      ..Self::default()
+    }
+  }
 }
 
 /// Re-points this session's link at the requested version.
@@ -31,11 +57,38 @@ pub struct UseOptions {
 ///
 /// Fails with nvm's exit codes: 3 when the version is not installed, 8 for
 /// an alias loop, 127 when no version is given or found, and 1 when rnm is
-/// not set up in this shell.
-pub fn use_version(ctx: &Context, opts: &UseOptions, out: &mut dyn Write) -> Result<(), Failure> {
+/// not set up in this shell. With `install_if_missing`, also the exit codes
+/// of [`install`].
+pub fn use_version(
+  ctx: &Context,
+  opts: &UseOptions,
+  out: &mut dyn Write,
+  err: &mut dyn Write,
+) -> Result<(), Failure> {
+  let Some(spec) = requested_spec(ctx, opts, out)? else {
+    return Ok(());
+  };
+  let session = ctx.session.as_ref().ok_or_else(not_set_up)?;
+  switch_session(ctx, session, &spec, opts, out, err)
+}
+
+/// The version to switch to: the explicit one, or the nearest version
+/// file's. `None` when a hook finds neither a version file nor a `default`
+/// alias, so there is nothing to do.
+pub(crate) fn requested_spec(
+  ctx: &Context,
+  opts: &UseOptions,
+  out: &mut dyn Write,
+) -> Result<Option<VersionSpec>, Failure> {
   let spec_text = match (&opts.lts, &opts.version) {
     | (Some(lts), _) => format!("{LTS_PREFIX}{lts}"),
     | (None, Some(version)) => version.clone(),
+    | (None, None) if opts.from_hook => match find_version_file(&ctx.cwd, VersionFileKind::DEFAULT)
+    {
+      | Some((path, kind)) => load_version_file(&path, kind)?.version,
+      | None if has_default_alias(ctx) => DEFAULT_ALIAS.to_owned(),
+      | None => return Ok(None),
+    },
     | (None, None) => {
       let file = version_file(ctx)?;
       if !opts.silent && !opts.silent_if_unchanged {
@@ -51,15 +104,46 @@ pub fn use_version(ctx: &Context, opts: &UseOptions, out: &mut dyn Write) -> Res
       file.version
     },
   };
-  let spec: VersionSpec = spec_text
+  spec_text
     .parse()
-    .map_err(|e| Failure::new(exit::NOT_AVAILABLE, format!("{e}")))?;
+    .map(Some)
+    .map_err(|e| Failure::new(exit::NOT_AVAILABLE, format!("{e}")))
+}
 
-  let session = ctx.session.as_ref().ok_or_else(not_set_up)?;
-  let resolved = ctx
+fn has_default_alias(ctx: &Context) -> bool {
+  ctx
     .nvm_dir
-    .resolve(&spec)
-    .map_err(|e| resolve_failure(&spec, &e))?;
+    .aliases()
+    .get(DEFAULT_ALIAS)
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+/// Re-points `session` at `spec` (installing it first with
+/// `install_if_missing`) and prints the result.
+pub(crate) fn switch_session(
+  ctx: &Context,
+  session: &Session,
+  spec: &VersionSpec,
+  opts: &UseOptions,
+  out: &mut dyn Write,
+  err: &mut dyn Write,
+) -> Result<(), Failure> {
+  let resolved = match ctx.nvm_dir.resolve(spec) {
+    | Err(ResolveError::NotInstalled(_)) if opts.install_if_missing => {
+      let install_opts = InstallOptions {
+        version: Some(spec.to_string()),
+        no_use: true,
+        progress: opts.progress,
+        ..InstallOptions::default()
+      };
+      install(ctx, &install_opts, out, err)?;
+      ctx.nvm_dir.resolve(spec)
+    },
+    | resolved => resolved,
+  }
+  .map_err(|e| resolve_failure(spec, &e))?;
   let current = session.target()?;
 
   let switched = match resolved {
@@ -94,7 +178,8 @@ pub fn use_version(ctx: &Context, opts: &UseOptions, out: &mut dyn Write) -> Res
   let Some(switched) = switched else {
     return Ok(());
   };
-  let quiet = opts.silent || (opts.silent_if_unchanged && switched.unchanged);
+  let silent_if_unchanged = opts.silent_if_unchanged || opts.from_hook;
+  let quiet = opts.silent || (silent_if_unchanged && switched.unchanged);
   if !quiet {
     say(out, &switched.message);
   }
@@ -124,7 +209,11 @@ pub(crate) fn version_file(ctx: &Context) -> Result<VersionFile, Failure> {
       "No version provided and no .nvmrc or .node-version file found",
     )
   })?;
-  VersionFile::load(&path, kind)
+  load_version_file(&path, kind)
+}
+
+fn load_version_file(path: &Path, kind: VersionFileKind) -> Result<VersionFile, Failure> {
+  VersionFile::load(path, kind)
     .map_err(|e| Failure::new(exit::ERROR, format!("invalid {}: {e}", path.display())))
 }
 

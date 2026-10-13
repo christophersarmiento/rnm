@@ -129,6 +129,10 @@ impl Tree {
   }
 
   fn rnm(&self, args: &[&str]) -> Output {
+    self.rnm_with(args, &[])
+  }
+
+  fn rnm_with(&self, args: &[&str], envs: &[(&str, &Path)]) -> Output {
     let mut command = Command::new(RNM);
     command.env_clear();
     if let Some(system_root) = std::env::var_os("SystemRoot") {
@@ -141,6 +145,7 @@ impl Tree {
       .env("RNM_NODE_MIRROR", &self.mirror_url)
       .env("RNM_AUTH_HEADER", TOKEN)
       .env("NVM_INSTALL_LOCK_TIMEOUT", "0")
+      .envs(envs.iter().copied())
       .current_dir(&self.root)
       .output()
       .unwrap()
@@ -243,6 +248,43 @@ fn exact_installed_version_needs_no_network() {
   assert_success(&output);
   assert!(text(&output.stderr).contains("is already installed."));
   assert_eq!(seen.lock().unwrap().len(), requests_after_install);
+}
+
+/// The `--use-on-cd` hook with `--install-if-missing` installs the version
+/// file's version and switches the session to it; without the flag it only
+/// reports the missing version.
+#[test]
+fn use_installs_a_missing_version_on_request() {
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, _seen) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  std::fs::write(tree.root.join(".nvmrc"), "20\n").unwrap();
+  let links = tree.root.join("multishells");
+  std::fs::create_dir(&links).unwrap();
+  let session = links.join("1_2");
+  let envs = [("RNM_MULTISHELL_PATH", session.as_path())];
+
+  let output = tree.rnm_with(&["use", "--from-hook"], &envs);
+  assert_eq!(output.status.code(), Some(3));
+  assert!(text(&output.stderr).contains("rnm install"));
+  assert_eq!(tree.dir().installed_versions().unwrap().len(), 0);
+
+  let output = tree.rnm_with(&["use", "--from-hook", "--install-if-missing"], &envs);
+  assert_success(&output);
+  let stdout = text(&output.stdout);
+  assert!(
+    stdout.contains(&format!("Downloading and installing node {VERSION}...")),
+    "{stdout}"
+  );
+  assert!(
+    stdout.ends_with(&format!("Now using node {VERSION}\n")),
+    "{stdout}"
+  );
+  assert_eq!(
+    canonical(&session),
+    canonical(&tree.version_dir()),
+    "the session link points at the new version"
+  );
 }
 
 #[test]
