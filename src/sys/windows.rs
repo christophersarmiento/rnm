@@ -10,8 +10,10 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
   CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
+use windows_sys::Win32::System::SystemInformation::{IMAGE_FILE_MACHINE, IMAGE_FILE_MACHINE_ARM64};
 use windows_sys::Win32::System::Threading::{
-  GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+  GetCurrentProcess, GetExitCodeProcess, IsWow64Process2, OpenProcess,
+  PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 use super::{Process, ProcessInfo};
@@ -106,7 +108,18 @@ pub fn is_alive(pid: u32) -> bool {
   }
 }
 
-/// x64 emulation on Windows on Arm is not detected yet.
+/// An x64 (or x86) process on an Arm64 machine runs under emulation.
 pub fn is_translated() -> bool {
-  false
+  let mut process_machine: IMAGE_FILE_MACHINE = 0;
+  let mut native_machine: IMAGE_FILE_MACHINE = 0;
+  // SAFETY: the pseudo-handle from GetCurrentProcess needs no closing; both
+  // out-pointers are valid for the call.
+  let ok = unsafe {
+    IsWow64Process2(
+      GetCurrentProcess(),
+      &raw mut process_machine,
+      &raw mut native_machine,
+    )
+  };
+  ok != 0 && native_machine == IMAGE_FILE_MACHINE_ARM64 && !cfg!(target_arch = "aarch64")
 }

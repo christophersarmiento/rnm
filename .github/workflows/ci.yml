@@ -24,7 +24,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99
         with:
           components: rustfmt, clippy
@@ -38,12 +38,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
+        env:
+          RNM_EXPECT_TRANSLATED: "0"
+      # An x64 rnm on an Arm64 machine (Rosetta 2, Prism) must notice the
+      # emulation and install arm64 Node.js.
+      - name: Emulated x64 build
+        if: runner.os == 'macOS' || matrix.os == 'windows-11-arm'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then target=x86_64-apple-darwin; else target=x86_64-pc-windows-msvc; fi
+          rustup target add "$target"
+          cargo test --locked --lib --target "$target" sys::
+        env:
+          RNM_EXPECT_TRANSLATED: "1"
 
   nvm-compat:
     name: nvm compatibility (${{ matrix.os }})
@@ -55,7 +68,7 @@ jobs:
     env:
       NVM_VERSION: v0.40.8
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99
       - uses: Swatinem/rust-cache@v2
       - name: Fetch nvm
@@ -71,9 +84,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            shells: bash,zsh,fish,nu,pwsh
+          - os: macos-latest
+            shells: bash,zsh,fish,nu,pwsh
+          # bash is Git Bash; powershell is Windows PowerShell 5.1.
+          - os: windows-latest
+            shells: bash,nu,pwsh,powershell
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99
       - uses: Swatinem/rust-cache@v2
       - name: Install zsh and fish (Linux)
@@ -83,6 +103,7 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install fish
       - name: Install PowerShell (if missing)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           command -v pwsh || { if [ "$RUNNER_OS" = macOS ]; then brew install --cask powershell; else sudo snap install powershell --classic; fi; }
@@ -90,10 +111,19 @@ jobs:
         with:
           version: "0.116.1"
       - name: Shell versions
+        shell: bash
         run: |
-          bash --version | head -1; zsh --version; fish --version; nu --version
+          bash --version | head -1; nu --version
           pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          if [ "$RUNNER_OS" = Windows ]; then
+            powershell -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          else
+            zsh --version; fish --version
+          fi
+      - name: Build the fake node.exe (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build --locked --example fake_node
       - name: End-to-end shell tests
         run: cargo test --locked --test shells
         env:
-          RNM_REQUIRE_SHELLS: bash,zsh,fish,nu,pwsh
+          RNM_REQUIRE_SHELLS: ${{ matrix.shells }}
