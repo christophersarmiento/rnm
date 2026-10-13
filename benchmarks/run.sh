@@ -195,11 +195,14 @@ trap 'exit 130' INT TERM
 port_file=$sandbox/port
 "$python_bin" "$BENCH_DIR/bench.py" serve "$mirror_dir" "$port_file" &
 server_pid=$!
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  [ -s "$port_file" ] && break
+# A cold Python can take several seconds to start on CI runners.
+waited=0
+while [ ! -s "$port_file" ] && [ "$waited" -lt 120 ]; do
+  kill -0 "$server_pid" 2>/dev/null || die "the local mirror exited before it started"
   sleep 0.25
+  waited=$((waited + 1))
 done
-[ -s "$port_file" ] || die "the local mirror did not start"
+[ -s "$port_file" ] || die "the local mirror did not start within 30 seconds"
 mirror_url=http://127.0.0.1:$(cat "$port_file")
 
 # Nothing from the user's own setup may leak in: no tool variables, no

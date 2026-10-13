@@ -325,3 +325,5 @@ jobs:
           Set-Content -LiteralPath (Join-Path $dist 'SHA256SUMS') -Value '0000  rnm-x86_64-pc-windows-msvc.zip'
           pwsh -NoProfile -File install.ps1 -SkipShell
           if (-not $LASTEXITCODE) { throw 'a bad checksum was accepted' }
+          # The runner fails the step with the last native exit code.
+          exit 0
