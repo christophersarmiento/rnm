@@ -489,6 +489,7 @@ dependencies = [
 name = "rnm"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "clap",
  "clap_complete",
  "clap_complete_nushell",
@@ -496,6 +497,7 @@ dependencies = [
  "junction",
  "libc",
  "lzma-rust2",
+ "percent-encoding",
  "ring",
  "serde",
  "serde_json",

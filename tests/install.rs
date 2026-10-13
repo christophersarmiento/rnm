@@ -463,3 +463,53 @@ fn uninstall_reports_a_version_in_use() {
   assert_success(&tree.rnm(&["uninstall", VERSION]));
   assert_eq!(tree.dir().installed_versions().unwrap().len(), 0);
 }
+
+/// Mirrors from `config.toml` are tried in order: an unreachable main
+/// mirror falls back for the index, and a mirror that lacks the archive
+/// falls back for the download.
+#[test]
+fn falls_back_to_the_next_mirror() {
+  let good = Arc::new(Mutex::new(Mirror::valid()));
+  let (good_url, good_seen) = serve_mirror(&good);
+  let mut incomplete = Mirror::valid();
+  incomplete.archive_name = "missing.tar.gz".to_owned();
+  let (incomplete_url, _) = serve_mirror(&Arc::new(Mutex::new(incomplete)));
+  let unreachable = format!("http://127.0.0.1:{}/dist", unused_port());
+
+  let tree = Tree::new(&unreachable);
+  let config = tree.root.join("config.toml");
+  std::fs::write(
+    &config,
+    format!("[mirror]\nfallback = [\"{incomplete_url}\", \"{good_url}\"]\n"),
+  )
+  .unwrap();
+  let output = tree.rnm_with(&["install", "20"], &[("RNM_CONFIG", &config)]);
+  assert_success(&output);
+  let stderr = text(&output.stderr);
+  assert_eq!(
+    stderr.matches("trying the next mirror").count(),
+    2,
+    "{stderr}"
+  );
+  assert!(tree.version_dir().exists());
+  let archive_path = format!("/dist/{VERSION}/{}", good.lock().unwrap().archive_name);
+  assert!(
+    good_seen
+      .lock()
+      .unwrap()
+      .iter()
+      .any(|request| request.path == archive_path)
+  );
+}
+
+#[test]
+fn reports_an_invalid_config_file() {
+  let tree = Tree::new("https://unused.invalid/dist");
+  let config = tree.root.join("config.toml");
+  std::fs::write(&config, "[mirror]\nurls = []\n").unwrap();
+  let output = tree.rnm_with(&["ls"], &[("RNM_CONFIG", &config)]);
+  assert_eq!(output.status.code(), Some(1));
+  let stderr = text(&output.stderr);
+  assert!(stderr.contains("config.toml"), "{stderr}");
+  assert!(stderr.contains("urls"), "{stderr}");
+}

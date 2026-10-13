@@ -3,8 +3,9 @@
 use std::io::Write;
 
 use super::use_version::version_file;
-use super::{Context, DEFAULT_ALIAS, Failure, UseOptions, exit, remote_index, say, use_version};
-use crate::http::{Client, Mirror};
+use super::{
+  Context, DEFAULT_ALIAS, Failure, Remote, UseOptions, exit, remote_index, say, use_version,
+};
 use crate::install::{Event, Installer, LockSettings, cached_versions, install_from_cache};
 use crate::nvm_dir::{Flavor, InstalledVersion, Resolved};
 use crate::platform::Platform;
@@ -83,8 +84,9 @@ pub fn install(
     },
     | None if opts.offline => install_offline(ctx, &requested, &spec, out, err)?,
     | None => {
-      let index = remote_index(ctx, err)?;
-      let release = index
+      let remote = remote_index(ctx, err)?;
+      let release = remote
+        .index
         .resolve(&spec)
         .map_err(|e| remote_failure(&requested, &e))?;
       let version_dir = ctx.nvm_dir.version_dir(Flavor::Node, &release.version);
@@ -96,7 +98,7 @@ pub fn install(
           out,
           format_args!("Downloading and installing node {}...", release.version),
         );
-        download(ctx, opts, release, err)?
+        download(ctx, opts, &remote, release, err)?
       }
     },
   };
@@ -205,16 +207,16 @@ fn installed_exact_version(ctx: &Context, spec: &VersionSpec) -> Option<Installe
 fn download(
   ctx: &Context,
   opts: &InstallOptions,
+  remote: &Remote,
   release: &Release,
   err: &mut dyn Write,
 ) -> Result<InstalledVersion, Failure> {
   let failure = |e: &dyn std::fmt::Display| Failure::new(exit::ERROR, e.to_string());
-  let mirror = Mirror::from_env(|key| ctx.var(key)).map_err(|e| failure(&e))?;
   let platform = Platform::detect().map_err(|e| failure(&e))?;
   let installer = Installer {
     nvm_dir: &ctx.nvm_dir,
-    mirror: &mirror,
-    client: &Client::for_mirror(&mirror),
+    mirrors: remote.download_mirrors(),
+    client: &remote.network.client,
     platform: &platform,
     lock: LockSettings::from_env(|key| ctx.var_string(key)),
   };
@@ -266,6 +268,12 @@ impl Reporter<'_> {
         ),
       ),
       | Event::ChecksumMatched => say(self.err, "Checksums matched!"),
+      | Event::TryingNextMirror { error } => {
+        say(
+          self.err,
+          format_args!("warning: {error}; trying the next mirror"),
+        );
+      },
       | Event::UsingCachedOffline { path } => say(
         self.err,
         format_args!(

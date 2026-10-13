@@ -107,6 +107,15 @@ impl Platform {
     Ok(Self { os, arch, musl })
   }
 
+  /// nodejs.org publishes no binaries for this system, but
+  /// unofficial-builds.nodejs.org does: Linux with musl libc, riscv64, and
+  /// loong64.
+  #[must_use]
+  pub fn needs_unofficial_builds(&self) -> bool {
+    let unofficial_arch = matches!(self.arch, "riscv64" | "loong64");
+    self.os == Os::Linux && (self.musl || unofficial_arch)
+  }
+
   /// The binary to download for `version`, after nvm's fallbacks: darwin
   /// arm64 before Node.js 16 uses x64 (it runs under Rosetta 2), and 32-bit
   /// ARM Linux before Node.js 4 uses `arm-pi`. Likewise, win-arm64 before

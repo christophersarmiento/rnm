@@ -11,6 +11,7 @@
 
 mod auth;
 mod mirror;
+mod netrc;
 mod url;
 
 use std::fmt;
@@ -18,11 +19,14 @@ use std::io::Read;
 use std::time::Duration;
 
 use ureq::http::{StatusCode, header};
-use ureq::tls::{RootCerts, TlsConfig};
+use ureq::tls::{Certificate, RootCerts, TlsConfig};
 
-pub use auth::{Credential, InvalidSecret, Scope, Secret};
-pub use mirror::{DEFAULT_NODE_MIRROR, Mirror, MirrorError};
-pub use url::{InvalidUrl, Origin, Url};
+pub use auth::{
+  Credential, CredentialValue, HelperCommand, InvalidSecret, Scope, Secret, basic_auth,
+};
+pub use mirror::{DEFAULT_NODE_MIRROR, Mirror, MirrorError, Network, UNOFFICIAL_BUILDS_MIRROR};
+pub use netrc::{NetrcEntry, parse_netrc};
+pub use url::{InvalidUrl, Origin, Url, UserInfo};
 
 /// Redirect hops before giving up, the same limit browsers and curl use.
 const MAX_REDIRECTS: usize = 10;
@@ -83,15 +87,22 @@ pub enum HttpError {
   BadRedirect { url: String, location: String },
   /// Network, DNS, TLS, or proxy failure.
   Transport { url: String, message: String },
+  /// A credential helper command failed.
+  Credential {
+    url: String,
+    source: String,
+    message: String,
+  },
 }
 
 impl fmt::Display for HttpError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     let credential_hint = |f: &mut fmt::Formatter<'_>, source: &Option<String>| match source {
       | Some(var) => write!(f, " (sent the credential from {var})"),
-      | None => {
-        f.write_str(" (no credential was sent; set RNM_AUTH_HEADER, for example 'Bearer <token>')")
-      },
+      | None => f.write_str(
+        " (no credential was sent; set RNM_AUTH_HEADER, for example 'Bearer <token>', or add \
+         an [[auth]] entry to config.toml)",
+      ),
     };
     match self {
       | Self::Unauthorized {
@@ -120,38 +131,68 @@ impl fmt::Display for HttpError {
         write!(f, "{url}: redirect to an invalid location '{location}'")
       },
       | Self::Transport { url, message } => write!(f, "{url}: {message}"),
+      | Self::Credential {
+        url,
+        source,
+        message,
+      } => write!(f, "{url}: no credential from {source}: {message}"),
     }
   }
 }
 
 impl std::error::Error for HttpError {}
 
+/// HTTP 429 Too Many Requests.
+const TOO_MANY_REQUESTS: u16 = 429;
+
+impl HttpError {
+  /// Another mirror might succeed where this request failed: the host is
+  /// unreachable, overloaded, or lacks the file. Credential problems are
+  /// not in this group, because they need fixing, not hiding.
+  #[must_use]
+  pub fn allows_fallback(&self) -> bool {
+    match self {
+      | Self::Transport { .. }
+      | Self::NotFound { .. }
+      | Self::TooManyRedirects { .. }
+      | Self::BadRedirect { .. } => true,
+      | Self::Status { status, .. } => *status == TOO_MANY_REQUESTS || *status >= 500,
+      | Self::Unauthorized { .. } | Self::Forbidden { .. } | Self::Credential { .. } => false,
+    }
+  }
+}
+
 impl Client {
   /// Creates a client that sends each of `credentials` only inside its
-  /// scope.
+  /// scope. When several cover a URL, the first one wins. Certificates are
+  /// checked against the operating system's trust store.
   #[must_use]
   pub fn new(credentials: Vec<Credential>) -> Self {
+    Self::with_roots(credentials, RootCerts::PlatformVerifier)
+  }
+
+  /// Like [`Client::new`], but trusts only `certificates` (a corporate
+  /// root, for example), as curl's `--cacert` does.
+  #[must_use]
+  pub fn with_ca_certificates(
+    credentials: Vec<Credential>,
+    certificates: Vec<Certificate<'static>>,
+  ) -> Self {
+    Self::with_roots(credentials, RootCerts::from(certificates))
+  }
+
+  fn with_roots(credentials: Vec<Credential>, roots: RootCerts) -> Self {
     let config = ureq::Agent::config_builder()
       .max_redirects(0)
       .http_status_as_error(false)
       .timeout_connect(Some(CONNECT_TIMEOUT))
       .user_agent(USER_AGENT)
-      .tls_config(
-        TlsConfig::builder()
-          .root_certs(RootCerts::PlatformVerifier)
-          .build(),
-      )
+      .tls_config(TlsConfig::builder().root_certs(roots).build())
       .build();
     Self {
       agent: ureq::Agent::new_with_config(config),
       credentials,
     }
-  }
-
-  /// A client for `mirror`, with its credential if it has one.
-  #[must_use]
-  pub fn for_mirror(mirror: &Mirror) -> Self {
-    Self::new(mirror.credential.iter().cloned().collect())
   }
 
   /// Sends a GET request and follows redirects.
@@ -189,10 +230,14 @@ impl Client {
         .find(|credential| credential.scope.covers(&url));
       let mut request = self.agent.get(url.uri());
       if let Some(credential) = credential {
-        request = request.header(
-          credential.header.clone(),
-          credential.value.header_value().clone(),
-        );
+        let secret = credential
+          .secret()
+          .map_err(|message| HttpError::Credential {
+            url: url.to_string(),
+            source: credential.source.clone(),
+            message,
+          })?;
+        request = request.header(credential.header.clone(), secret.header_value().clone());
       }
       if let Some(etag) = etag {
         request = request.header(header::IF_NONE_MATCH, etag);

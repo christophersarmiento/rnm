@@ -77,7 +77,7 @@ pub fn ls_remote(
     Failure::new(exit::NOT_AVAILABLE, message)
   };
   let filter = Filter::new(opts).map_err(|e| not_available(out, e.to_string()))?;
-  let index = remote_index(ctx, err)?;
+  let index = remote_index(ctx, err)?.index;
   let mut rows = filter
     .select(&index)
     .map_err(|message| not_available(out, message))?;
