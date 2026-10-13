@@ -8,7 +8,7 @@ use super::current::active;
 use super::listing::{NOT_AVAILABLE_LABEL, palette};
 use super::{Context, Failure, SYSTEM_LABEL, exit, say};
 use crate::nvm_dir::{Flavor, ResolveError, Resolved};
-use crate::version::{IOJS_PREFIX, LTS_PREFIX, Version, VersionSpec};
+use crate::version::{IOJS_PREFIX, LTS_PREFIX, Version, VersionSpec, looks_like_range};
 
 /// What nvm prints for an alias chain that loops.
 const LOOP_LABEL: &str = "∞";
@@ -77,6 +77,15 @@ pub fn alias(
         ));
       }
       reject_subdirectory(name)?;
+      if looks_like_range(target) {
+        return Err(Failure::new(
+          exit::ERROR,
+          format!(
+            "'{target}' is an npm range; an alias must name a version or another alias, so \
+             nvm can read it too"
+          ),
+        ));
+      }
       let resolved = listing.resolve(target);
       if resolved == NOT_AVAILABLE_LABEL {
         say(

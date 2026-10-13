@@ -89,6 +89,11 @@ fn matching_versions(ctx: &Context, pattern: Option<&str>) -> Result<Vec<String>
       list(Flavor::Node, Some(req))
     },
     | VersionSpec::Iojs(req) => list(Flavor::Iojs, req.as_ref()),
+    | VersionSpec::Range(range) => installed
+      .iter()
+      .filter(|i| i.flavor == Flavor::Node && range.matches(&i.version))
+      .map(ToString::to_string)
+      .collect(),
     | VersionSpec::System if has_system => vec![SYSTEM_LABEL.to_owned()],
     | _ => match ctx.nvm_dir.resolve(&spec) {
       | Ok(Resolved::Installed(installed)) => vec![installed.to_string()],

@@ -189,6 +189,9 @@ impl Resolver<'_> {
         }
       },
       | VersionSpec::Alias(name) => self.follow(name),
+      | VersionSpec::Range(range) => self
+        .newest(Flavor::Node, |v| range.matches(v))
+        .ok_or_else(not_installed),
     }
   }
 

@@ -12,7 +12,7 @@ use super::listing::{
 use super::{Context, Failure, exit, remote_index, say};
 use crate::nvm_dir::Flavor;
 use crate::remote::{Release, RemoteIndex};
-use crate::version::{LTS_PREFIX, LtsSpec, SpecError, VersionReq, VersionSpec};
+use crate::version::{LTS_PREFIX, LtsSpec, NodeRange, SpecError, VersionReq, VersionSpec};
 
 /// Options for [`ls_remote`].
 #[derive(Clone, Debug, Default)]
@@ -45,6 +45,7 @@ pub enum Order {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Filter {
   version: Option<VersionReq>,
+  range: Option<NodeRange>,
   lts: Option<LtsSpec>,
   /// The pattern can never match a release, such as `system` or an alias.
   matches_nothing: bool,
@@ -132,6 +133,7 @@ impl Filter {
     if let Some(pattern) = &opts.pattern {
       match pattern.parse::<VersionSpec>() {
         | Ok(VersionSpec::Version(req)) => filter.version = Some(req),
+        | Ok(VersionSpec::Range(range)) => filter.range = Some(range),
         | Ok(VersionSpec::Node) => {},
         | Ok(VersionSpec::Lts(lts)) => filter.lts = Some(lts),
         | Err(e @ (SpecError::LtsUppercase(_) | SpecError::InvalidLts(_))) => return Err(e),
@@ -176,6 +178,10 @@ impl Filter {
         .version
         .as_ref()
         .is_none_or(|req| req.matches(&release.version))
+        && self
+          .range
+          .as_ref()
+          .is_none_or(|range| range.matches(&release.version))
     };
     Ok(
       index
