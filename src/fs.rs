@@ -33,6 +33,23 @@ pub fn replace_symlink(target: &Path, link: &Path) -> io::Result<()> {
   rename_or_clean_up(&tmp, link)
 }
 
+/// Other users can read the file at `path` (unix permission bits). Always
+/// `false` on Windows, where files in the profile are private by default.
+#[must_use]
+pub fn is_readable_by_others(path: &Path) -> bool {
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    const GROUP_OR_OTHER: u32 = 0o077;
+    std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & GROUP_OR_OTHER != 0)
+  }
+  #[cfg(not(unix))]
+  {
+    let _ = path;
+    false
+  }
+}
+
 /// A hidden name next to `path`, unique to this process, so concurrent rnm
 /// processes never share a temporary file.
 fn temp_sibling(path: &Path) -> PathBuf {

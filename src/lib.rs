@@ -3,6 +3,7 @@
 //! The library holds all logic; `main.rs` is only the command-line front end.
 
 pub mod commands;
+pub mod config;
 pub mod fs;
 pub mod http;
 pub mod install;
