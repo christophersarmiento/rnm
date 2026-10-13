@@ -30,7 +30,7 @@ jobs:
       sha: ${{ steps.check.outputs.sha }}
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: dev
       - id: check

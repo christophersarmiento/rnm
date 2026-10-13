@@ -24,7 +24,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99
         with:
           components: rustfmt, clippy
@@ -40,7 +40,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
@@ -55,7 +55,7 @@ jobs:
     env:
       NVM_VERSION: v0.40.8
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99
       - uses: Swatinem/rust-cache@v2
       - name: Fetch nvm
@@ -80,7 +80,7 @@ jobs:
           - os: windows-latest
             shells: bash,nu,pwsh,powershell
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99
       - uses: Swatinem/rust-cache@v2
       - name: Install zsh and fish (Linux)
