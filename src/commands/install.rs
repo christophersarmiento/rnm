@@ -10,7 +10,7 @@ use crate::install::{Event, Installer, LockSettings, cached_versions, install_fr
 use crate::nvm_dir::{Flavor, InstalledVersion, Resolved};
 use crate::platform::Platform;
 use crate::remote::{Release, RemoteResolveError};
-use crate::version::{LTS_PREFIX, VersionFileKind, VersionReq, VersionSpec};
+use crate::version::{LTS_PREFIX, VersionFileKind, VersionReq, VersionSpec, looks_like_range};
 
 /// The width of the download progress bar, as curl's `--progress-bar`.
 const PROGRESS_BAR_WIDTH: u64 = 72;
@@ -323,6 +323,14 @@ fn finish(
     use_version(ctx, &use_opts, out, err)?;
   }
 
+  // nvm stores the spec as given, but nvm cannot read an npm range, so a
+  // range from package.json is stored as the version it resolved to.
+  let installed_text = installed.to_string();
+  let requested = if looks_like_range(requested) {
+    installed_text.as_str()
+  } else {
+    requested
+  };
   let aliases = ctx.nvm_dir.aliases();
   let has_default = aliases.get(DEFAULT_ALIAS)?.is_some();
   if !has_default {

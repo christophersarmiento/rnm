@@ -33,13 +33,17 @@ pub use uninstall::uninstall;
 pub use use_version::{UseOptions, use_version};
 pub use which::which;
 
-use crate::config::Config;
+use crate::config::{Config, env_flag};
 use crate::http::{Mirror, Network};
 use crate::multishell::{self, Multishells, Session};
 use crate::nvm_dir::{AliasError, NODE_EXECUTABLE, NvmDir, global_modules_dir, is_executable};
 use crate::platform::Platform;
 use crate::remote::{RemoteIndex, load_index, refresh_lts_aliases};
 use crate::shell::{Inferred, ShellKind};
+use crate::version::VersionFileKind;
+
+/// Turn on `package.json` as a version file, highest precedence first.
+const RESOLVE_ENGINES_VARS: [&str; 2] = ["RNM_RESOLVE_ENGINES", "FNM_RESOLVE_ENGINES"];
 
 /// What nvm prints for "no version is active".
 pub const NONE_LABEL: &str = "none";
@@ -160,6 +164,21 @@ impl Context {
   #[must_use]
   pub fn var_string(&self, key: &str) -> Option<String> {
     self.var(key).map(|v| v.to_string_lossy().into_owned())
+  }
+
+  /// The version files to look for: `.nvmrc` and `.node-version`, plus
+  /// `package.json` when `RNM_RESOLVE_ENGINES` (or fnm's
+  /// `FNM_RESOLVE_ENGINES`) or `version_files.package_json` turns it on.
+  #[must_use]
+  pub fn version_file_kinds(&self) -> &'static [VersionFileKind] {
+    let reads_package_json = env_flag(|key| self.var(key), &RESOLVE_ENGINES_VARS)
+      .or(self.config.version_files.package_json)
+      .unwrap_or(false);
+    if reads_package_json {
+      VersionFileKind::WITH_PACKAGE_JSON
+    } else {
+      VersionFileKind::DEFAULT
+    }
   }
 
   /// `dir` is inside the install tree or a session link, so it belongs to

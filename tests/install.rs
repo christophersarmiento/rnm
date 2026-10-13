@@ -513,3 +513,30 @@ fn reports_an_invalid_config_file() {
   assert!(stderr.contains("config.toml"), "{stderr}");
   assert!(stderr.contains("urls"), "{stderr}");
 }
+
+/// With `RNM_RESOLVE_ENGINES`, `package.json` names the version; the
+/// `default` alias gets the resolved version, because nvm cannot read an
+/// npm range.
+#[test]
+fn installs_the_range_from_package_json_on_request() {
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, _) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  std::fs::write(
+    tree.root.join("package.json"),
+    r#"{"devEngines":{"runtime":{"name":"node","version":">=19 <21"}}}"#,
+  )
+  .unwrap();
+
+  let output = tree.rnm(&["install"]);
+  assert_eq!(output.status.code(), Some(127), "package.json is opt-in");
+
+  let output = tree.rnm_with(&["install"], &[("RNM_RESOLVE_ENGINES", Path::new("1"))]);
+  assert_success(&output);
+  let stdout = text(&output.stdout);
+  assert!(stdout.contains("with version <>=19 <21>"), "{stdout}");
+  assert_eq!(
+    std::fs::read_to_string(tree.root.join("alias").join("default")).unwrap(),
+    format!("{VERSION}\n")
+  );
+}

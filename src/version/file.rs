@@ -1,8 +1,9 @@
-//! Version files: `.nvmrc` and `.node-version`.
+//! Version files: `.nvmrc`, `.node-version`, and (opt-in) `package.json`.
 //!
 //! `.nvmrc` parsing follows nvm's `nvm_process_nvmrc_content` exactly (see
 //! `docs/research/nvm.md` §3.2). `.node-version` takes the first word of the
-//! first non-comment line, as nodenv and fnm do.
+//! first non-comment line, as nodenv and fnm do. `package.json` gives an npm
+//! range from `devEngines.runtime` (the `node` entry) or `engines.node`.
 
 use std::fmt;
 use std::io;
@@ -28,6 +29,10 @@ pub enum VersionFileKind {
   Nvmrc,
   /// `.node-version`, the format used by nodenv, fnm, and others.
   NodeVersion,
+  /// `package.json`: `devEngines.runtime.version` for `node`, else
+  /// `engines.node`. A `package.json` with neither does not count as a
+  /// version file.
+  PackageJson,
 }
 
 impl VersionFileKind {
@@ -35,12 +40,16 @@ impl VersionFileKind {
   /// `.node-version`.
   pub const DEFAULT: &[Self] = &[Self::Nvmrc, Self::NodeVersion];
 
+  /// [`Self::DEFAULT`], then `package.json`, for users who opt in.
+  pub const WITH_PACKAGE_JSON: &[Self] = &[Self::Nvmrc, Self::NodeVersion, Self::PackageJson];
+
   /// The file name, for example `.nvmrc`.
   #[must_use]
   pub const fn file_name(self) -> &'static str {
     match self {
       | Self::Nvmrc => ".nvmrc",
       | Self::NodeVersion => ".node-version",
+      | Self::PackageJson => "package.json",
     }
   }
 }
@@ -132,6 +141,9 @@ impl VersionFile {
     let version = match kind {
       | VersionFileKind::Nvmrc => parse_nvmrc(&text)?.version,
       | VersionFileKind::NodeVersion => parse_node_version(&text)?,
+      | VersionFileKind::PackageJson => {
+        package_json_range(&text).ok_or(VersionFileError::NoVersion)?
+      },
     };
     Ok(Self {
       path: path.to_path_buf(),
@@ -268,6 +280,45 @@ pub fn parse_node_version(content: &str) -> Result<String, VersionFileError> {
     .ok_or(VersionFileError::NoVersion)
 }
 
+/// The Node.js range a `package.json` asks for: the `version` of the
+/// `devEngines.runtime` entry named `node` (an object or an array of them,
+/// per npm's `devEngines` spec), else `engines.node`. `None` when there is
+/// neither, or the text is not JSON.
+#[must_use]
+pub fn package_json_range(text: &str) -> Option<String> {
+  let json: serde_json::Value = serde_json::from_str(text).ok()?;
+  let non_empty = |value: &serde_json::Value| {
+    value
+      .as_str()
+      .map(str::trim)
+      .filter(|text| !text.is_empty())
+      .map(str::to_owned)
+  };
+  let runtime = &json["devEngines"]["runtime"];
+  let runtimes = match runtime {
+    | serde_json::Value::Array(entries) => entries.iter().collect(),
+    | entry => vec![entry],
+  };
+  runtimes
+    .into_iter()
+    .find(|entry| entry["name"].as_str() == Some("node"))
+    .and_then(|entry| non_empty(&entry["version"]))
+    .or_else(|| non_empty(&json["engines"]["node"]))
+}
+
+/// The file at `path` names a version. Always true for `.nvmrc` and
+/// `.node-version` (a broken one is reported when it is loaded); a
+/// `package.json` counts only with a Node.js range in it.
+fn names_a_version(path: &Path, kind: VersionFileKind) -> bool {
+  match kind {
+    | VersionFileKind::PackageJson => std::fs::read(path)
+      .ok()
+      .and_then(|bytes| decode_version_file(&bytes).ok())
+      .is_some_and(|text| package_json_range(&text).is_some()),
+    | _ => path.is_file(),
+  }
+}
+
 /// Finds the nearest version file, walking up from `start` to the root.
 ///
 /// In each directory, `kinds` are checked in order, so with
@@ -290,7 +341,7 @@ pub fn find_version_file(
     .find_map(|dir| {
       kinds.iter().find_map(|&kind| {
         let path = dir.join(kind.file_name());
-        path.is_file().then_some((path, kind))
+        names_a_version(&path, kind).then_some((path, kind))
       })
     })
 }
@@ -298,6 +349,66 @@ pub fn find_version_file(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn reads_package_json_ranges() {
+    let range = |text: &str| package_json_range(text);
+    assert_eq!(
+      range(r#"{"engines":{"node":">=18 <21"}}"#).as_deref(),
+      Some(">=18 <21")
+    );
+    assert_eq!(
+      range(
+        r#"{"engines":{"node":"18"},"devEngines":{"runtime":{"name":"node","version":"^20.1"}}}"#
+      )
+      .as_deref(),
+      Some("^20.1")
+    );
+    assert_eq!(
+      range(
+        r#"{"devEngines":{"runtime":[{"name":"bun","version":"1"},{"name":"node","version":" 22 "}]}}"#
+      )
+      .as_deref(),
+      Some("22")
+    );
+    assert_eq!(
+      range(r#"{"devEngines":{"runtime":{"name":"deno"}},"engines":{"node":"20"}}"#).as_deref(),
+      Some("20")
+    );
+    assert_eq!(range(r#"{"name":"x","engines":{"npm":"10"}}"#), None);
+    assert_eq!(range(r#"{"engines":{"node":""}}"#), None);
+    assert_eq!(range("not json"), None);
+  }
+
+  #[test]
+  fn package_json_counts_only_with_a_range() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(tmp.path().join(".nvmrc"), "18\n").unwrap();
+    std::fs::write(project.join("package.json"), r#"{"name":"x"}"#).unwrap();
+    let found = |kinds| find_version_file(&project, kinds).map(|(path, _)| path);
+    assert_eq!(
+      found(VersionFileKind::WITH_PACKAGE_JSON),
+      Some(tmp.path().join(".nvmrc"))
+    );
+    std::fs::write(
+      project.join("package.json"),
+      r#"{"engines":{"node":"20.x"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+      found(VersionFileKind::WITH_PACKAGE_JSON),
+      Some(project.join("package.json"))
+    );
+    assert_eq!(
+      found(VersionFileKind::DEFAULT),
+      Some(tmp.path().join(".nvmrc"))
+    );
+    let file =
+      VersionFile::load(&project.join("package.json"), VersionFileKind::PackageJson).unwrap();
+    assert_eq!(file.version, "20.x");
+  }
 
   fn nvmrc(s: &str) -> String {
     parse_nvmrc(s)
