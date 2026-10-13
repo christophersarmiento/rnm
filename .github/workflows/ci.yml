@@ -235,3 +235,95 @@ jobs:
         run: cargo test --locked --test shells
         env:
           RNM_REQUIRE_SHELLS: ${{ matrix.shells }}
+
+  # install.sh and install.ps1 against a local fake release: download,
+  # checksum, install, profile setup (twice, to check it is idempotent), and
+  # a new shell that loads rnm from the profile.
+  installer:
+    name: Install script (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Install zsh and fish
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then brew install fish; else sudo apt-get update -qq && sudo apt-get install -y -qq zsh fish; fi
+      - name: install.sh
+        if: runner.os != 'Windows'
+        run: |
+          dist="$RUNNER_TEMP/dist"
+          mkdir -p "$dist"
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin; do
+            tar -czf "$dist/rnm-$target.tar.gz" -C target/release rnm
+          done
+          (cd "$dist" && { sha256sum ./*.tar.gz 2>/dev/null || shasum -a 256 ./*.tar.gz; } | sed 's# \./# #' > SHA256SUMS)
+
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          unset XDG_CONFIG_HOME XDG_DATA_HOME ZDOTDIR
+          export RNM_INSTALL_BASE_URL="$dist"
+          for shell in bash zsh fish bash; do SHELL="/bin/$shell" bash install.sh; done
+          if [ "$RUNNER_OS" = macOS ]; then bash_profile="$HOME/.bash_profile"; else bash_profile="$HOME/.bashrc"; fi
+          for file in "$bash_profile" "$HOME/.zshrc" "$HOME/.config/fish/conf.d/rnm.fish"; do
+            count=$(grep -c 'rnm env' "$file")
+            [ "$count" = 1 ] || { echo "::error::$file sets up rnm $count times"; cat "$file"; exit 1; }
+          done
+
+          PATH=/usr/bin:/bin bash -c ". '$bash_profile'; rnm --version; test -n \"\$RNM_MULTISHELL_PATH\""
+          PATH=/usr/bin:/bin zsh -c ". ~/.zshrc; rnm --version; test -n \"\$RNM_MULTISHELL_PATH\""
+          fish -c 'source ~/.config/fish/conf.d/rnm.fish; rnm --version; test -n "$RNM_MULTISHELL_PATH"'
+
+          echo "0000  rnm-x86_64-unknown-linux-musl.tar.gz" > "$dist/SHA256SUMS"
+          echo "0000  rnm-aarch64-unknown-linux-musl.tar.gz" >> "$dist/SHA256SUMS"
+          echo "0000  rnm-x86_64-apple-darwin.tar.gz" >> "$dist/SHA256SUMS"
+          echo "0000  rnm-aarch64-apple-darwin.tar.gz" >> "$dist/SHA256SUMS"
+          if bash install.sh --skip-shell 2>err.txt; then echo "::error::a bad checksum was accepted"; exit 1; fi
+          grep -q 'checksum mismatch' err.txt
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dist = Join-Path $env:RUNNER_TEMP 'dist'
+          New-Item -ItemType Directory -Path $dist | Out-Null
+          $sums = foreach ($target in 'x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc') {
+            $zip = Join-Path $dist "rnm-$target.zip"
+            Compress-Archive -LiteralPath target\release\rnm.exe -DestinationPath $zip
+            "$((Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower())  rnm-$target.zip"
+          }
+          Set-Content -LiteralPath (Join-Path $dist 'SHA256SUMS') -Value $sums
+          $env:RNM_INSTALL_BASE_URL = $dist
+
+          powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+          if ($LASTEXITCODE) { throw 'install.ps1 failed in Windows PowerShell' }
+          pwsh -NoProfile -File install.ps1
+          if ($LASTEXITCODE) { throw 'install.ps1 failed in pwsh' }
+
+          $bin = Join-Path $env:LOCALAPPDATA 'rnm\bin'
+          $userPath = (Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+          if (@($userPath -split ';' | Where-Object { $_ -eq $bin }).Count -ne 1) { throw "user Path: $userPath" }
+          $documents = [Environment]::GetFolderPath('MyDocuments')
+          foreach ($edition in 'WindowsPowerShell', 'PowerShell') {
+            $profilePath = Join-Path $documents "$edition\profile.ps1"
+            $count = @(Select-String -LiteralPath $profilePath -Pattern 'rnm env').Count
+            if ($count -ne 1) { throw "$profilePath sets up rnm $count times" }
+          }
+
+          $env:Path = "$bin;$env:Path"
+          $check = 'rnm --version; if (-not $env:RNM_MULTISHELL_PATH) { exit 1 }'
+          powershell -ExecutionPolicy Bypass -Command $check
+          if ($LASTEXITCODE) { throw 'the Windows PowerShell profile did not load rnm' }
+          pwsh -Command $check
+          if ($LASTEXITCODE) { throw 'the pwsh profile did not load rnm' }
+
+          Set-Content -LiteralPath (Join-Path $dist 'SHA256SUMS') -Value '0000  rnm-x86_64-pc-windows-msvc.zip'
+          pwsh -NoProfile -File install.ps1 -SkipShell
+          if (-not $LASTEXITCODE) { throw 'a bad checksum was accepted' }
+          # The runner fails the step with the last native exit code.
+          exit 0
