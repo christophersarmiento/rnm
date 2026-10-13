@@ -6,7 +6,10 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
+use clap_complete::{Shell, generate};
+use clap_complete_nushell::Nushell;
 use rnm::commands::{self, Context, Failure};
+use rnm::shell::ShellKind;
 
 use crate::cli::{Cli, Command};
 
@@ -29,6 +32,9 @@ fn main() -> ExitCode {
 }
 
 fn run(command: Command) -> Result<(), Failure> {
+  if let Command::Completions { shell } = command {
+    return completions(shell);
+  }
   let ctx = Context::from_env()?;
   let stdout = std::io::stdout();
   let mut out = stdout.lock();
@@ -55,5 +61,55 @@ fn run(command: Command) -> Result<(), Failure> {
     | Command::Which { spec, silent } => commands::which(&ctx, spec.as_deref(), silent, &mut out),
     | Command::Exec(args) => commands::exec(&ctx, &args.into(), &mut out),
     | Command::LsRemote(args) => commands::ls_remote(&ctx, &args.into(), &mut out, &mut err),
+    | Command::Completions { .. } => unreachable!("handled before the context is built"),
   }
+}
+
+/// Writes the completion script, generated from the clap definition. It
+/// needs no install tree, so it works before rnm is set up.
+fn completions(shell: Option<ShellKind>) -> Result<(), Failure> {
+  let shell = match shell {
+    | Some(shell) => shell,
+    | None => commands::infer_shell()?,
+  };
+  let mut command = without_hidden(&Cli::command());
+  let name = command.get_name().to_owned();
+  // Generated into memory, because the generators panic on a closed pipe.
+  let mut script = Vec::new();
+  match shell {
+    | ShellKind::Bash => generate(Shell::Bash, &mut command, name, &mut script),
+    | ShellKind::Zsh => generate(Shell::Zsh, &mut command, name, &mut script),
+    | ShellKind::Fish => generate(Shell::Fish, &mut command, name, &mut script),
+    | ShellKind::PowerShell => generate(Shell::PowerShell, &mut command, name, &mut script),
+    | ShellKind::Nu => generate(Nushell, &mut command, name, &mut script),
+  }
+  let _ = std::io::stdout().write_all(&script);
+  Ok(())
+}
+
+/// A copy of `command` without hidden arguments and subcommands, which the
+/// completion generators would otherwise offer (`use --from-hook`).
+fn without_hidden(command: &clap::Command) -> clap::Command {
+  let mut copy = clap::Command::new(command.get_name().to_owned())
+    .args(
+      command
+        .get_arguments()
+        .filter(|arg| !arg.is_hide_set())
+        .cloned(),
+    )
+    .subcommands(
+      command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+        .map(without_hidden),
+    )
+    .visible_aliases(command.get_visible_aliases().map(str::to_owned))
+    .propagate_version(command.is_propagate_version_set());
+  if let Some(about) = command.get_about() {
+    copy = copy.about(about.clone());
+  }
+  if let Some(version) = command.get_version() {
+    copy = copy.version(version.to_owned());
+  }
+  copy
 }
