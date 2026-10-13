@@ -136,6 +136,7 @@ pub enum Hive {
 
 /// The `REG_SZ` value `name` under `subkey`, or `None` when the key or value
 /// is missing or not a string.
+#[must_use]
 pub fn registry_string(hive: Hive, subkey: &str, name: &str) -> Option<String> {
   let root = match hive {
     | Hive::CurrentUser => HKEY_CURRENT_USER,
