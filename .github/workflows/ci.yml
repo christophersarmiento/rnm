@@ -38,12 +38,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
+        env:
+          RNM_EXPECT_TRANSLATED: "0"
+      # An x64 rnm on an Arm64 machine (Rosetta 2, Prism) must notice the
+      # emulation and install arm64 Node.js.
+      - name: Emulated x64 build
+        if: runner.os == 'macOS' || matrix.os == 'windows-11-arm'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then target=x86_64-apple-darwin; else target=x86_64-pc-windows-msvc; fi
+          rustup target add "$target"
+          cargo test --locked --lib --target "$target" sys::
+        env:
+          RNM_EXPECT_TRANSLATED: "1"
 
   nvm-compat:
     name: nvm compatibility (${{ matrix.os }})

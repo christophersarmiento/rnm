@@ -4,8 +4,9 @@
 //! The operating system and CPU come from rnm's own build target: a 32-bit
 //! rnm runs in a 32-bit userland, so it installs 32-bit Node.js, as nvm's
 //! `getconf LONG_BIT` check does. Two facts are only known at run time: an
-//! x64 rnm under Rosetta 2 installs arm64 Node.js, and Linux with musl libc
-//! (Alpine) needs the `-musl` builds.
+//! x64 rnm under emulation (Rosetta 2 on macOS, Prism on Windows on Arm)
+//! installs arm64 Node.js, and Linux with musl libc (Alpine) needs the
+//! `-musl` builds.
 
 use std::fmt;
 use std::path::Path;
@@ -14,6 +15,9 @@ use crate::version::Version;
 
 /// The first Node.js release with darwin-arm64 binaries.
 const FIRST_DARWIN_ARM64_MAJOR: u64 = 16;
+
+/// The first Node.js release with win-arm64 binaries, 19.9.0.
+const FIRST_WINDOWS_ARM64: (u64, u64) = (19, 9);
 
 /// Before Node.js 4, 32-bit ARM Linux binaries were named `arm-pi`.
 const FIRST_GENERIC_ARM_MAJOR: u64 = 4;
@@ -95,7 +99,8 @@ impl Platform {
     };
     let os = build_os().ok_or_else(unsupported)?;
     let mut arch = build_arch().ok_or_else(unsupported)?;
-    if os == Os::Darwin && arch == "x64" && crate::sys::is_translated() {
+    let can_emulate_x64 = matches!(os, Os::Darwin | Os::Windows);
+    if can_emulate_x64 && arch == "x64" && crate::sys::is_translated() {
       arch = "arm64";
     }
     let musl = os == Os::Linux && uses_musl(Path::new("/"));
@@ -104,14 +109,17 @@ impl Platform {
 
   /// The binary to download for `version`, after nvm's fallbacks: darwin
   /// arm64 before Node.js 16 uses x64 (it runs under Rosetta 2), and 32-bit
-  /// ARM Linux before Node.js 4 uses `arm-pi`.
+  /// ARM Linux before Node.js 4 uses `arm-pi`. Likewise, win-arm64 before
+  /// Node.js 19.9 uses x64, which Windows 11 on Arm emulates.
   #[must_use]
   pub fn artifact(&self, version: &Version) -> Artifact {
     let predates_darwin_arm64 = version.major < FIRST_DARWIN_ARM64_MAJOR;
+    let predates_windows_arm64 = (version.major, version.minor) < FIRST_WINDOWS_ARM64;
     let predates_generic_arm = version.major < FIRST_GENERIC_ARM_MAJOR;
     let is_32_bit_arm = matches!(self.arch, "armv6l" | "armv7l");
     let (arch, has_file_id) = match (self.os, self.arch) {
       | (Os::Darwin, "arm64") if predates_darwin_arm64 => ("x64", true),
+      | (Os::Windows, "arm64") if predates_windows_arm64 => ("x64", true),
       | (Os::Linux, _) if is_32_bit_arm && predates_generic_arm => ("arm-pi", false),
       | (_, arch) => (arch, true),
     };
@@ -228,6 +236,25 @@ mod tests {
       (
         "node-v14.21.3-darwin-x64".to_owned(),
         Some("osx-x64-tar".to_owned())
+      )
+    );
+  }
+
+  #[test]
+  fn windows_arm64_falls_back_to_x64_before_19_9() {
+    let windows = platform(Os::Windows, "arm64", false);
+    assert_eq!(
+      artifact(&windows, "19.9.0"),
+      (
+        "node-v19.9.0-win-arm64".to_owned(),
+        Some("win-arm64-zip".to_owned())
+      )
+    );
+    assert_eq!(
+      artifact(&windows, "18.20.4"),
+      (
+        "node-v18.20.4-win-x64".to_owned(),
+        Some("win-x64-zip".to_owned())
       )
     );
   }

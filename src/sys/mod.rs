@@ -53,8 +53,8 @@ pub fn is_alive(pid: u32) -> bool {
 }
 
 /// Returns `true` if this process is an x64 build running under binary
-/// translation (Rosetta 2 on Apple Silicon), where native arm64 Node.js
-/// would run faster.
+/// translation (Rosetta 2 on Apple Silicon, Prism on Windows on Arm), where
+/// native arm64 Node.js would run faster.
 #[must_use]
 pub fn is_translated() -> bool {
   imp::is_translated()
@@ -63,6 +63,15 @@ pub fn is_translated() -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// CI runs an x64 build of the tests on Arm64 machines with
+  /// `RNM_EXPECT_TRANSLATED=1`.
+  #[test]
+  fn detects_translation_when_ci_expects_it() {
+    if let Some(expected) = std::env::var_os("RNM_EXPECT_TRANSLATED") {
+      assert_eq!(is_translated(), expected == "1");
+    }
+  }
 
   #[test]
   fn current_parent_is_alive() {
