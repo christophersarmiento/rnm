@@ -24,7 +24,7 @@ Now using node v20.19.5 (npm v10.8.2)
 ## Features
 
 - **nvm-compatible.** Same install tree, alias files, `.nvmrc` rules, version grammar (`lts/*`, `lts/iron`, `lts/-1`, `node`, `system`, aliases), command names, flags, output formats, and exit codes. `NVM_BIN` and `NVM_INC` are set for the tools that read them.
-- **Fast.** One process at shell startup and no subshells; `use` only re-points a per-shell link. See the [benchmarks](docs/benchmarks.md).
+- **Fast.** rnm adds about 4 ms to a shell's startup and `use` takes about 3.5 ms: as fast as fnm, and 25 to 100 times faster than nvm. See the [benchmarks](docs/benchmarks.md).
 - **Five shells, three operating systems.** bash (3.2+), zsh, fish, Nushell, and PowerShell (7 and Windows PowerShell 5.1) on macOS, Linux, and Windows, including Windows on Arm and Git Bash.
 - **Automatic switching** on `cd` from `.nvmrc`, `.node-version`, and (opt-in) `package.json` `devEngines` / `engines`, with npm ranges such as `^20.1` or `>=18 <21`.
 - **Verified downloads.** Every archive is checked against `SHASUMS256.txt` while it streams, then unpacked and renamed into place, so a version is never half-installed.
@@ -105,7 +105,13 @@ See [Migrating](docs/migrating.md).
 | Automatic switching on `cd` | README snippets | `--use-on-cd` | `--use-on-cd` (also `package.json`, opt-in) |
 | `default-packages`, `--reinstall-packages-from` | yes | no | yes |
 
-Timings are in [Benchmarks](docs/benchmarks.md).
+Measured with hyperfine on an Apple M3 (lower is better; details in [Benchmarks](docs/benchmarks.md)):
+
+| | rnm | fnm | nvm |
+|---|--:|--:|--:|
+| Shell startup | 3.6 ms | 3.9 ms | 130 ms |
+| `use` | 3.5 ms | 3.5 ms | 194 ms |
+| `cd` into a project with another `.nvmrc` | 3.5 ms | 3.6 ms | 359 ms |
 
 ## Documentation
 
