@@ -61,6 +61,10 @@ fn run(command: Command) -> Result<(), Failure> {
     | Command::Unalias { name } => commands::unalias(&ctx, &name, &mut out, &mut err),
     | Command::Which { spec, silent } => commands::which(&ctx, spec.as_deref(), silent, &mut out),
     | Command::Exec(args) => commands::exec(&ctx, &args.into(), &mut out),
+    | Command::ReinstallPackages { spec } => {
+      commands::reinstall_packages_command(&ctx, &spec, &mut out)
+    },
+    | Command::InstallLatestNpm => commands::install_latest_npm_command(&ctx, &mut out),
     | Command::LsRemote(args) => commands::ls_remote(&ctx, &args.into(), &mut out, &mut err),
     | Command::Completions { .. } => unreachable!("handled before the context is built"),
   }

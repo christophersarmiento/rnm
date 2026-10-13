@@ -12,6 +12,7 @@ mod install;
 mod listing;
 mod ls;
 mod ls_remote;
+mod packages;
 mod uninstall;
 mod use_version;
 mod which;
@@ -29,6 +30,7 @@ pub use exec::{ExecOptions, exec};
 pub use install::{InstallOptions, Progress, install};
 pub use ls::{LsOptions, ls};
 pub use ls_remote::{LsRemoteOptions, Order, ls_remote};
+pub use packages::{DEFAULT_PACKAGES_FILE, install_latest_npm_command, reinstall_packages_command};
 pub use uninstall::uninstall;
 pub use use_version::{UseOptions, use_version};
 pub use which::which;
@@ -66,8 +68,14 @@ pub struct Failure {
 pub mod exit {
   /// General error.
   pub const ERROR: u8 = 1;
+  /// `reinstall-packages` from the active version.
+  pub const SAME_AS_CURRENT: u8 = 2;
   /// The requested version is not installed or not available.
   pub const NOT_AVAILABLE: u8 = 3;
+  /// `install --reinstall-packages-from` the version being installed.
+  pub const SAME_AS_INSTALLING: u8 = 4;
+  /// The `--reinstall-packages-from` version is not installed.
+  pub const SOURCE_NOT_INSTALLED: u8 = 5;
   /// An alias chain loops.
   pub const ALIAS_LOOP: u8 = 8;
   /// No version given and none found in a version file, or usage error.

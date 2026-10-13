@@ -66,19 +66,36 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// A Node.js-shaped archive: `<slug>/bin/node` (or `<slug>/node.exe` on
 /// Windows) that prints the version.
+///
+/// On unix it also has npm's `npm-cli.js`. Run as `node npm-cli.js …`, the
+/// fake `node` appends its arguments and working directory to
+/// `$FAKE_NPM_LOG` instead of running npm.
 #[cfg(unix)]
 fn fake_archive(slug: &str) -> (Vec<u8>, &'static str) {
   let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
   let mut builder = tar::Builder::new(encoder);
-  let script = format!("#!/bin/sh\necho {VERSION}\n");
-  let mut header = tar::Header::new_gnu();
-  header.set_size(u64::try_from(script.len()).unwrap());
-  header.set_mode(0o755);
-  header.set_cksum();
-  builder
-    .append_data(&mut header, format!("{slug}/bin/node"), script.as_bytes())
-    .unwrap();
+  let mut add = |path: String, contents: &str| {
+    let mut header = tar::Header::new_gnu();
+    header.set_size(u64::try_from(contents.len()).unwrap());
+    header.set_mode(0o755);
+    header.set_cksum();
+    builder
+      .append_data(&mut header, path, contents.as_bytes())
+      .unwrap();
+  };
+  add(format!("{slug}/bin/node"), &fake_node_script(VERSION));
+  add(
+    format!("{slug}/lib/node_modules/npm/bin/npm-cli.js"),
+    "// fake\n",
+  );
   (builder.into_inner().unwrap().finish().unwrap(), "tar.gz")
+}
+
+#[cfg(unix)]
+fn fake_node_script(version: &str) -> String {
+  format!(
+    "#!/bin/sh\ncase \"$1\" in *npm-cli.js) shift; echo \"$* @ $(pwd -P)\" >> \"$FAKE_NPM_LOG\"; exit 0;; esac\necho {version}\n"
+  )
 }
 
 #[cfg(windows)]
@@ -539,4 +556,84 @@ fn installs_the_range_from_package_json_on_request() {
     std::fs::read_to_string(tree.root.join("alias").join("default")).unwrap(),
     format!("{VERSION}\n")
   );
+}
+
+/// `--latest-npm`, `default-packages`, and `--reinstall-packages-from` run
+/// the new version's npm, in nvm's order.
+#[cfg(unix)]
+#[test]
+fn runs_npm_for_packages() {
+  use std::os::unix::fs::PermissionsExt;
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, _) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  let log = tree.root.join("npm.log");
+  std::fs::write(
+    tree.root.join("default-packages"),
+    "# tools\ntypescript\n@scope/tool@2\n",
+  )
+  .unwrap();
+
+  let output = tree.rnm_with(
+    &["install", "20", "--latest-npm"],
+    &[("FAKE_NPM_LOG", &log)],
+  );
+  assert_success(&output);
+  let stdout = text(&output.stdout);
+  assert!(stdout.contains("npm v9.x is the last version"), "{stdout}");
+  assert!(
+    stdout.contains("Installing default global packages from"),
+    "{stdout}"
+  );
+  let logged = std::fs::read_to_string(&log).unwrap();
+  let lines: Vec<&str> = logged
+    .lines()
+    .map(|l| l.split(" @ ").next().unwrap())
+    .collect();
+  assert_eq!(
+    lines,
+    [
+      "install -g --quiet npm@9",
+      "install -g --quiet typescript @scope/tool@2"
+    ]
+  );
+
+  // An older version with one registry package and one linked package.
+  let old = tree.dir().node_versions_dir().join("v18.0.0");
+  let node = old.join("bin").join("node");
+  std::fs::create_dir_all(node.parent().unwrap()).unwrap();
+  std::fs::write(&node, fake_node_script("v18.0.0")).unwrap();
+  std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+  let modules = old.join("lib").join("node_modules");
+  std::fs::create_dir_all(modules.join("left-pad")).unwrap();
+  std::fs::write(
+    modules.join("left-pad").join("package.json"),
+    r#"{"name":"left-pad","version":"1.3.0"}"#,
+  )
+  .unwrap();
+  let linked = tree.root.join("my-cli");
+  std::fs::create_dir_all(&linked).unwrap();
+  std::os::unix::fs::symlink(&linked, modules.join("my-cli")).unwrap();
+
+  std::fs::remove_file(&log).unwrap();
+  let output = tree.rnm_with(
+    &[
+      "install",
+      "20",
+      "--reinstall-packages-from=18",
+      "--skip-default-packages",
+    ],
+    &[("FAKE_NPM_LOG", &log)],
+  );
+  assert_success(&output);
+  let logged = std::fs::read_to_string(&log).unwrap();
+  let lines: Vec<&str> = logged.lines().collect();
+  assert_eq!(lines.len(), 2, "{logged}");
+  assert!(lines[0].starts_with("install -g --quiet left-pad@1.3.0 @ "));
+  assert_eq!(lines[1], format!("link @ {}", canonical(&linked).display()));
+
+  let output = tree.rnm(&["install", "20", "--reinstall-packages-from=20"]);
+  assert_eq!(output.status.code(), Some(4), "{}", text(&output.stderr));
+  let output = tree.rnm(&["install", "20", "--copy-packages-from=16"]);
+  assert_eq!(output.status.code(), Some(5), "{}", text(&output.stderr));
 }

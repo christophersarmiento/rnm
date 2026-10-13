@@ -2,6 +2,9 @@
 
 use std::io::Write;
 
+use super::packages::{
+  install_default_packages, install_latest_npm, package_source, reinstall_packages,
+};
 use super::use_version::version_file;
 use super::{
   Context, DEFAULT_ALIAS, Failure, Remote, UseOptions, exit, remote_index, say, use_version,
@@ -44,6 +47,14 @@ pub struct InstallOptions {
   /// `--offline`: choose among installed and cached versions, and install
   /// from the download cache without network access.
   pub offline: bool,
+  /// `--latest-npm`: upgrade npm to the newest one that works with this
+  /// version.
+  pub latest_npm: bool,
+  /// `--skip-default-packages`: do not install `<root>/default-packages`.
+  pub skip_default_packages: bool,
+  /// `--reinstall-packages-from=<version>`: copy that installed version's
+  /// global packages.
+  pub reinstall_packages_from: Option<String>,
 }
 
 /// Download progress output.
@@ -76,6 +87,11 @@ pub fn install(
 ) -> Result<(), Failure> {
   let requested = requested_spec(ctx, opts, out)?;
   let spec: VersionSpec = requested.parse().map_err(|_| not_found(&requested))?;
+  let package_source = opts
+    .reinstall_packages_from
+    .as_deref()
+    .map(|provided| package_source(ctx, provided))
+    .transpose()?;
 
   let installed = match installed_exact_version(ctx, &spec) {
     | Some(installed) => {
@@ -102,7 +118,26 @@ pub fn install(
       }
     },
   };
-  finish(ctx, opts, &requested, &installed, out, err)
+  if package_source
+    .as_ref()
+    .is_some_and(|source| source.dir == installed.path)
+  {
+    return Err(Failure::new(
+      exit::SAME_AS_INSTALLING,
+      "You can't reinstall global packages from the same version of node you're installing.",
+    ));
+  }
+  finish(ctx, opts, &requested, &installed, out, err)?;
+  if opts.latest_npm {
+    install_latest_npm(ctx, &installed, out)?;
+  }
+  if !opts.skip_default_packages {
+    install_default_packages(ctx, &installed, out)?;
+  }
+  if let Some(source) = package_source {
+    reinstall_packages(ctx, &source.dir, &source.label, &installed, out)?;
+  }
+  Ok(())
 }
 
 /// The spec as the user gave it: `--lts`, the argument, or the version file.

@@ -121,6 +121,18 @@ pub enum Command {
     shell: Option<ShellKind>,
   },
 
+  /// Reinstall the global npm packages of another version into the active
+  /// one.
+  #[command(visible_alias = "copy-packages")]
+  ReinstallPackages {
+    /// An installed version, an alias, or system.
+    #[arg(value_name = "VERSION")]
+    spec: String,
+  },
+
+  /// Upgrade the active version's npm to the newest one that works with it.
+  InstallLatestNpm,
+
   /// List the versions available on the mirror.
   ///
   /// Also refreshes the LTS aliases (lts/*, lts/<name>) that `use` reads.
@@ -209,6 +221,21 @@ pub struct InstallArgs {
   /// from the download cache.
   #[arg(long)]
   pub offline: bool,
+  /// Upgrade npm to the newest version that works with this node.
+  #[arg(long)]
+  pub latest_npm: bool,
+  /// Do not install the packages listed in the default-packages file.
+  #[arg(long)]
+  pub skip_default_packages: bool,
+  /// Reinstall the global npm packages of this installed version (or
+  /// system).
+  #[arg(
+    long,
+    require_equals = true,
+    value_name = "VERSION",
+    visible_alias = "copy-packages-from"
+  )]
+  pub reinstall_packages_from: Option<String>,
   /// nvm's "binary only" flag. rnm always installs binaries, so it has no
   /// effect.
   #[arg(short = 'b', hide = true)]
@@ -318,6 +345,9 @@ impl From<InstallArgs> for InstallOptions {
       no_use: args.no_use,
       progress: progress(args.no_progress),
       offline: args.offline,
+      latest_npm: args.latest_npm,
+      skip_default_packages: args.skip_default_packages,
+      reinstall_packages_from: args.reinstall_packages_from,
     }
   }
 }
