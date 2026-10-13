@@ -53,8 +53,8 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
       - uses: dtolnay/rust-toolchain@1.99
-        with:
-          targets: ${{ matrix.target }}
+      # In the checkout, so the target goes to rust-toolchain.toml's toolchain.
+      - run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
