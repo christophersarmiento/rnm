@@ -80,6 +80,7 @@ rnm exec 18 node app.js   # run one command with another version
 rnm which 20              # path to that version's node
 rnm uninstall 18
 rnm doctor                # check the setup
+rnm self-update           # update rnm itself
 ```
 
 Every command and flag is described in [Commands](docs/commands.md).

@@ -222,6 +222,7 @@ npm-check-updates@17
 | `NVM_NO_PROGRESS` | Any value: no download progress bar. |
 | `NVM_COLORS` | Five color letters for `ls`, as in nvm (default `bygre`). |
 | `TERM=dumb` | No colors. |
+| `RNM_GITHUB_URL`, `RNM_GITHUB_API_URL` | Where `self-update` and `doctor` look for rnm releases. Default: `https://github.com` and `https://api.github.com` (for a GitHub Enterprise mirror). |
 
 `rnm env` sets these in your shell:
 

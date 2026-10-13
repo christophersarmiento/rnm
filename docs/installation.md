@@ -5,7 +5,7 @@
 - [Manual install](#manual-install)
 - [Build from source](#build-from-source)
 - [Check the installation](#check-the-installation)
-- [Upgrade](#upgrade)
+- [Upgrade](#upgrade) (`rnm self-update`)
 - [Uninstall](#uninstall)
 
 rnm is a single binary. Release archives exist for:
@@ -132,14 +132,27 @@ rnm doctor
 
 ## Upgrade
 
-Run the install script again. It replaces the binary and leaves your startup files alone. Add `--skip-shell` (`-SkipShell` on Windows) if you set up your shell by hand.
+If you installed rnm with an install script:
+
+```sh
+rnm self-update            # the newest release on your channel
+rnm self-update --check    # only say whether there is one
+rnm self-update --nightly  # switch to nightly builds (--stable switches back)
+rnm self-update --version v0.1.0   # a specific release, also an older one
+```
+
+`self-update` downloads the release for your platform, checks it against the release's `SHA256SUMS`, runs the new binary once, and only then replaces the old one. It remembers your channel in `install.json` next to the binary, which the install scripts write.
+
+A copy installed another way belongs to that tool, so `self-update` does not touch it and prints the right command instead, for example `cargo install --locked --git https://github.com/christophersarmiento/rnm` for a cargo install. Running the install script again also upgrades: it replaces the binary and leaves your startup files alone.
+
+`rnm doctor` tells you when a newer release exists. No other command checks, so shell startup and version switching never touch the network.
 
 Upgrading rnm never touches your installed Node.js versions.
 
 ## Uninstall
 
 1. Remove the rnm block (it starts with `# rnm`) from your shell startup file or PowerShell profiles.
-2. Delete the binary: `~/.local/share/rnm/bin/rnm`, or `%LOCALAPPDATA%\rnm\bin\rnm.exe` (and remove that folder from your user `Path`).
+2. Delete the binary and `install.json` next to it: `~/.local/share/rnm/bin/`, or `%LOCALAPPDATA%\rnm\bin\` (and remove that folder from your user `Path`).
 3. On Windows, if you used `rnm default --persist`, run `rnm default --unpersist` first.
 4. Optionally delete the data:
    - **macOS and Linux:** the per-shell links in `$XDG_RUNTIME_DIR/rnm` or `~/.local/state/rnm`, the settings in `~/.config/rnm`, and the cache in `$NVM_DIR/.cache/rnm`. Your Node.js versions live in nvm's directory (`~/.nvm` by default), which nvm can keep using; delete it only if you want them gone.
