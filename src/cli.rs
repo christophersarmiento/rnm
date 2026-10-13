@@ -6,7 +6,8 @@ use clap::{Args, Parser, Subcommand};
 use std::io::IsTerminal;
 
 use rnm::commands::{
-  EnvOptions, ExecOptions, InstallOptions, LsOptions, LsRemoteOptions, Order, Progress, UseOptions,
+  EnvOptions, ExecOptions, ImportMode, ImportOptions, InstallOptions, LsOptions, LsRemoteOptions,
+  Order, Progress, UseOptions,
 };
 use rnm::shell::{CdHook, ShellKind};
 use rnm::version::LATEST_LTS;
@@ -79,6 +80,28 @@ pub enum Command {
   /// Delete an alias.
   Unalias { name: String },
 
+  /// Show the default version, or set it.
+  ///
+  /// `rnm default 20` is `rnm alias default 20`. On Windows, --persist
+  /// also makes the default version visible to programs started from
+  /// Explorer, such as IDEs, by adding a link to it to your user Path.
+  Default {
+    /// A version, alias, lts/*, or lts/<name>.
+    #[arg(value_name = "VERSION")]
+    spec: Option<String>,
+    /// Windows: add <install dir>\default to your user Path and keep it
+    /// pointing at the default version.
+    #[arg(long, conflicts_with = "unpersist")]
+    persist: bool,
+    /// Windows: undo --persist.
+    #[arg(long, conflicts_with = "spec")]
+    unpersist: bool,
+  },
+
+  /// Import versions installed by another version manager.
+  #[command(subcommand)]
+  Import(ImportSource),
+
   /// Print the path of a version's node binary.
   Which {
     /// A version, alias, current, or system. Defaults to the nearest
@@ -138,6 +161,49 @@ pub enum Command {
   /// Also refreshes the LTS aliases (lts/*, lts/<name>) that `use` reads.
   #[command(alias = "list-remote")]
   LsRemote(LsRemoteArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ImportSource {
+  /// Import nvm-windows's versions, aliases, and active version.
+  ///
+  /// By default each version is linked with a junction: nothing is copied
+  /// and nvm-windows keeps working. nvm-windows itself is never changed.
+  NvmWindows(ImportArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ImportArgs {
+  /// nvm-windows's install directory. Found from its settings when
+  /// omitted.
+  #[arg(long, value_name = "DIR")]
+  pub from: Option<std::path::PathBuf>,
+  /// Link each version (the default).
+  #[arg(long, group = "mode")]
+  pub link: bool,
+  /// Move each version into rnm's directory (one drive only); nvm-windows
+  /// loses it.
+  #[arg(long = "move", group = "mode")]
+  pub move_versions: bool,
+  /// Copy each version into rnm's directory.
+  #[arg(long, group = "mode")]
+  pub copy: bool,
+}
+
+impl From<ImportArgs> for ImportOptions {
+  fn from(args: ImportArgs) -> Self {
+    let mode = if args.move_versions {
+      ImportMode::Move
+    } else if args.copy {
+      ImportMode::Copy
+    } else {
+      ImportMode::Link
+    };
+    Self {
+      from: args.from,
+      mode,
+    }
+  }
 }
 
 #[derive(Debug, Args)]

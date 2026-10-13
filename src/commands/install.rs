@@ -396,6 +396,7 @@ fn finish(
       format!("{installed}\n"),
     )?;
   }
+  super::default_version::refresh_persistent_default(ctx, err);
   Ok(())
 }
 

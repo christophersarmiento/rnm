@@ -5,9 +5,11 @@
 mod alias;
 mod colors;
 mod current;
+mod default_version;
 mod doctor;
 mod env;
 mod exec;
+mod import;
 mod install;
 mod listing;
 mod ls;
@@ -24,9 +26,11 @@ use std::path::{Path, PathBuf};
 
 pub use alias::{alias, unalias};
 pub use current::current;
+pub use default_version::{Persistence, default_version};
 pub use doctor::doctor;
 pub use env::{EnvOptions, env};
 pub use exec::{ExecOptions, exec};
+pub use import::{ImportMode, ImportOptions, import_nvm_windows};
 pub use install::{InstallOptions, Progress, install};
 pub use ls::{LsOptions, ls};
 pub use ls_remote::{LsRemoteOptions, Order, ls_remote};

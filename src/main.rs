@@ -8,10 +8,10 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser};
 use clap_complete::{Shell, generate};
 use clap_complete_nushell::Nushell;
-use rnm::commands::{self, Context, Failure};
+use rnm::commands::{self, Context, Failure, Persistence};
 use rnm::shell::ShellKind;
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, ImportSource};
 
 fn main() -> ExitCode {
   let cli = Cli::parse();
@@ -57,6 +57,31 @@ fn run(command: Command) -> Result<(), Failure> {
       let terminal = std::io::stdout().is_terminal();
       let (name, target) = (name.as_deref(), target.as_deref());
       commands::alias(&ctx, name, target, no_colors, terminal, &mut out, &mut err)
+    },
+    | Command::Default {
+      spec,
+      persist,
+      unpersist,
+    } => {
+      let persistence = if persist {
+        Persistence::Persist
+      } else if unpersist {
+        Persistence::Unpersist
+      } else {
+        Persistence::Unchanged
+      };
+      let terminal = std::io::stdout().is_terminal();
+      commands::default_version(
+        &ctx,
+        spec.as_deref(),
+        persistence,
+        terminal,
+        &mut out,
+        &mut err,
+      )
+    },
+    | Command::Import(ImportSource::NvmWindows(args)) => {
+      commands::import_nvm_windows(&ctx, &args.into(), &mut out, &mut err)
     },
     | Command::Unalias { name } => commands::unalias(&ctx, &name, &mut out, &mut err),
     | Command::Which { spec, silent } => commands::which(&ctx, spec.as_deref(), silent, &mut out),

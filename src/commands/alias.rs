@@ -94,6 +94,9 @@ pub fn alias(
         );
       }
       ctx.nvm_dir.aliases().set(name, target)?;
+      if name == super::DEFAULT_ALIAS {
+        super::default_version::refresh_persistent_default(ctx, err);
+      }
       let line = AliasLine {
         name: name.to_owned(),
         target: target.to_owned(),

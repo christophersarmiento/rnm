@@ -15,7 +15,10 @@ use unix as imp;
 #[cfg(windows)]
 use windows as imp;
 #[cfg(windows)]
-pub use windows::{Hive, registry_string};
+pub use windows::{
+  Hive, RawRegistryString, broadcast_environment_change, registry_raw_string, registry_string,
+  registry_strings, set_registry_string,
+};
 
 /// One process in the ancestry chain.
 #[derive(Clone, Debug, PartialEq, Eq)]
