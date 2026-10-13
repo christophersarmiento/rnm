@@ -71,7 +71,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            shells: bash,zsh,fish,nu,pwsh
+          - os: macos-latest
+            shells: bash,zsh,fish,nu,pwsh
+          # bash is Git Bash; powershell is Windows PowerShell 5.1.
+          - os: windows-latest
+            shells: bash,nu,pwsh,powershell
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.99
@@ -83,6 +90,7 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install fish
       - name: Install PowerShell (if missing)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           command -v pwsh || { if [ "$RUNNER_OS" = macOS ]; then brew install --cask powershell; else sudo snap install powershell --classic; fi; }
@@ -90,10 +98,16 @@ jobs:
         with:
           version: "0.116.1"
       - name: Shell versions
+        shell: bash
         run: |
-          bash --version | head -1; zsh --version; fish --version; nu --version
+          bash --version | head -1; nu --version
           pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          if [ "$RUNNER_OS" = Windows ]; then
+            powershell -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          else
+            zsh --version; fish --version
+          fi
       - name: End-to-end shell tests
         run: cargo test --locked --test shells
         env:
-          RNM_REQUIRE_SHELLS: bash,zsh,fish,nu,pwsh
+          RNM_REQUIRE_SHELLS: ${{ matrix.shells }}

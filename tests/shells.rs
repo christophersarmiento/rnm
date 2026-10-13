@@ -1,16 +1,14 @@
-//! End-to-end tests in real shells: bash, zsh, fish, Nushell, and PowerShell.
+//! End-to-end tests in real shells: bash, zsh, fish, Nushell, pwsh, and (on
+//! Windows) Windows PowerShell 5.1 and Git Bash.
 //!
-//! Each test runs only for shells found on `PATH`. In CI, set
-//! `RNM_REQUIRE_SHELLS=bash,zsh,fish,nu,pwsh` so a missing shell fails the
-//! test instead of being skipped.
+//! Each test runs only for shells it finds. In CI, set `RNM_REQUIRE_SHELLS`
+//! (for example `bash,zsh,fish,nu,pwsh`) so a missing shell fails the test
+//! instead of being skipped.
 //!
 //! The fixture's directories contain spaces, quotes, `$`, backticks, and
 //! non-ASCII characters, so every path goes through the shells' quoting.
 
-#![cfg(unix)]
-
 use std::io::Write as _;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -57,12 +55,42 @@ const SHELLS: &[Shell] = &[
     kind: ShellKind::PowerShell,
     args: &["-NoProfile", "-NonInteractive", "-File"],
   },
+  Shell {
+    name: "powershell",
+    extension: "ps1",
+    kind: ShellKind::PowerShell,
+    args: &[
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+    ],
+  },
 ];
 
+/// `powershell` is Windows PowerShell 5.1, which exists only on Windows.
+const WINDOWS_ONLY: &[&str] = &["powershell"];
+
 fn find_on_path(name: &str) -> Option<PathBuf> {
+  let names = [name.to_owned(), format!("{name}.exe")];
   std::env::split_paths(&std::env::var_os("PATH")?)
-    .map(|dir| dir.join(name))
+    .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
     .find(|p| p.is_file())
+}
+
+/// The shell's executable. On Windows, `bash` means Git Bash; the `bash.exe`
+/// in System32 starts WSL instead.
+fn locate(shell: &Shell) -> Option<PathBuf> {
+  if WINDOWS_ONLY.contains(&shell.name) && !cfg!(windows) {
+    return None;
+  }
+  if cfg!(windows) && shell.name == "bash" {
+    let program_files = std::env::var_os("ProgramFiles")?;
+    let git_bash = Path::new(&program_files).join(r"Git\bin\bash.exe");
+    return git_bash.is_file().then_some(git_bash);
+  }
+  find_on_path(shell.name)
 }
 
 /// The shells to test. Fails if a shell listed in `RNM_REQUIRE_SHELLS` is
@@ -71,15 +99,15 @@ fn available() -> Vec<&'static Shell> {
   let required = std::env::var("RNM_REQUIRE_SHELLS").unwrap_or_default();
   let mut found = Vec::new();
   for shell in SHELLS {
-    if find_on_path(shell.name).is_some() {
+    if locate(shell).is_some() {
       found.push(shell);
     } else if required.split(',').any(|name| name.trim() == shell.name) {
       panic!(
-        "{} is required by RNM_REQUIRE_SHELLS but not on PATH",
+        "{} is required by RNM_REQUIRE_SHELLS but not found",
         shell.name
       );
     } else {
-      eprintln!("skipping {}: not on PATH", shell.name);
+      eprintln!("skipping {}: not found", shell.name);
     }
   }
   found
@@ -97,11 +125,8 @@ impl Fixture {
     let root = tmp.path().join("it's a $dir `x` é");
     let nvm = root.join("nvm");
     for version in ["v18.20.4", "v20.19.0", "v22.20.0"] {
-      let bin = nvm.join("versions").join("node").join(version).join("bin");
-      std::fs::create_dir_all(&bin).unwrap();
-      let node = bin.join("node");
-      std::fs::write(&node, format!("#!/bin/sh\necho {version}\n")).unwrap();
-      std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+      let version_dir = nvm.join("versions").join("node").join(version);
+      fake_node(&rnm::nvm_dir::bin_dir(&version_dir), version);
     }
     std::fs::create_dir_all(nvm.join("alias")).unwrap();
     std::fs::write(nvm.join("alias").join("default"), "20\n").unwrap();
@@ -132,20 +157,38 @@ impl Fixture {
     Self::finish(shell, &mut command, Some(script))
   }
 
+  /// The shell, started in the fixture with only the fixture's install tree
+  /// visible. On unix the environment is cleared. Windows shells need many
+  /// system variables, so there only rnm's variables are removed.
   fn command(&self, shell: &Shell) -> Command {
-    let bin_dir = Path::new(RNM).parent().unwrap();
-    let path = std::env::join_paths(
-      std::iter::once(bin_dir.to_path_buf())
-        .chain(["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"].map(PathBuf::from))
-        .chain(find_on_path(shell.name).and_then(|p| p.parent().map(Path::to_path_buf))),
-    )
-    .unwrap();
-    let mut command = Command::new(shell.name);
+    let program = locate(shell).unwrap();
+    let rnm_dir = Path::new(RNM).parent().unwrap().to_path_buf();
+    let mut command = Command::new(&program);
+    let system_path: Vec<PathBuf> = if cfg!(windows) {
+      std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect()
+    } else {
+      command.env_clear();
+      ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"]
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(program.parent().map(Path::to_path_buf))
+        .collect()
+    };
+    for (key, _) in std::env::vars_os() {
+      let key_text = key.to_string_lossy().to_ascii_uppercase();
+      if ["RNM_", "NVM_", "FNM_"]
+        .iter()
+        .any(|p| key_text.starts_with(p))
+      {
+        command.env_remove(&key);
+      }
+    }
+    let path = std::env::join_paths(std::iter::once(rnm_dir).chain(system_path)).unwrap();
     command
       .current_dir(&self.root)
-      .env_clear()
       .env("PATH", path)
       .env("HOME", &self.root)
+      .env("RNM_DIR", self.root.join("nvm"))
       .env("NVM_DIR", self.root.join("nvm"))
       .env("XDG_STATE_HOME", self.root.join("state"))
       .env("PWD", &self.root);
@@ -181,6 +224,22 @@ impl Fixture {
     );
     stdout
   }
+}
+
+/// A `node` in `bin` that prints `version`: a shell script on unix. On
+/// Windows, `node.cmd` for PowerShell and Nushell, plus the same shell script
+/// for Git Bash (which ignores `PATHEXT`).
+fn fake_node(bin: &Path, version: &str) {
+  std::fs::create_dir_all(bin).unwrap();
+  let script = bin.join("node");
+  std::fs::write(&script, format!("#!/bin/sh\necho {version}\n")).unwrap();
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+  }
+  #[cfg(windows)]
+  std::fs::write(bin.join("node.cmd"), format!("@echo {version}\r\n")).unwrap();
 }
 
 /// The setup line, then node / use / node / current, per shell.
@@ -281,11 +340,13 @@ fn use_on_cd_script(shell: &Shell) -> String {
         name = shell.name
       )
     },
-    | ShellKind::Fish => "cd project\nrnm env --shell fish --use-on-cd | source; or exit 1\nnode\ncd ..\nnode\n\
+    | ShellKind::Fish => {
+      "cd project\nrnm env --shell fish --use-on-cd | source; or exit 1\nnode\ncd ..\nnode\n\
        cd project; and node\ncd sub\nnode\nrnm use 20 >/dev/null\ncd ..\nnode\npushd old\nnode\n\
        cd ../..\nnode\nrnm use 18 >/dev/null\ncd plain\nnode\n\
        rnm env --shell fish --use-on-cd | source\ncd ../project\nnode\n"
-      .to_owned(),
+        .to_owned()
+    },
     | ShellKind::Nu => {
       let loader = String::from_utf8(
         Command::new(RNM)
@@ -310,12 +371,22 @@ fn use_on_cd_script(shell: &Shell) -> String {
          {loader}\ngo ../project\n^node\n"
       )
     },
-    | ShellKind::PowerShell => "$ErrorActionPreference = 'Stop'\nSet-Location project\n\
-       rnm env --shell powershell --use-on-cd | Out-String | Invoke-Expression\nnode\nSet-Location ..\nnode\n\
-       Set-Location project; node\nSet-Location sub\nnode\nrnm use 20 | Out-Null\nSet-Location ..\nnode\n\
-       Push-Location old\nnode\nSet-Location ../..\nnode\nrnm use 18 | Out-Null\nSet-Location plain\nnode\n\
-       rnm env --shell powershell --use-on-cd | Out-String | Invoke-Expression\nSet-Location ../project\nnode\n"
-      .to_owned(),
+    | ShellKind::PowerShell => {
+      // Windows PowerShell 5.1 has no LocationChangedAction, so the hook runs
+      // from `prompt`, which a script never shows; `go` calls it there.
+      let go = "function go($dir) {\n\
+                  Set-Location -LiteralPath $dir\n\
+                  if ($PSVersionTable.PSVersion -lt [version]'6.1') { $null = prompt }\n\
+                }\n";
+      format!(
+        "$ErrorActionPreference = 'Stop'\n{go}Set-Location project\n\
+         rnm env --shell powershell --use-on-cd | Out-String | Invoke-Expression\nnode\ngo ..\nnode\n\
+         go project; node\ngo sub\nnode\nrnm use 20 | Out-Null\ngo ..\nnode\n\
+         Push-Location old\nif ($PSVersionTable.PSVersion -lt [version]'6.1') {{ $null = prompt }}\nnode\n\
+         go ../..\nnode\nrnm use 18 | Out-Null\ngo plain\nnode\n\
+         rnm env --shell powershell --use-on-cd | Out-String | Invoke-Expression\ngo ../project\nnode\n"
+      )
+    },
   }
 }
 
