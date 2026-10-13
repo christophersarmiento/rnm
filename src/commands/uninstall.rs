@@ -4,7 +4,7 @@ use std::io::Write;
 
 use super::current::active;
 use super::{Context, Failure, exit, say};
-use crate::install::{InstallLock, LockSettings, remove_dir_safely};
+use crate::install::{InstallLock, LockSettings, Removal, remove_dir_safely};
 use crate::nvm_dir::{Flavor, InstalledVersion, ResolveError, Resolved};
 use crate::version::{LTS_PREFIX, VersionSpec};
 
@@ -17,8 +17,8 @@ use crate::version::{LTS_PREFIX, VersionSpec};
 ///
 /// # Errors
 ///
-/// Exit code 1 for the active version or on file system errors, 8 for an
-/// alias loop.
+/// Exit code 1 for the active version, a version a running program still
+/// uses (Windows), or on file system errors; 8 for an alias loop.
 pub fn uninstall(
   ctx: &Context,
   spec: Option<&str>,
@@ -76,7 +76,18 @@ pub fn uninstall(
     );
   })
   .map_err(|e| Failure::new(exit::ERROR, e.to_string()))?;
-  remove_dir_safely(&installed.path).map_err(|e| Failure::new(exit::ERROR, e.to_string()))?;
+  let removal =
+    remove_dir_safely(&installed.path).map_err(|e| Failure::new(exit::ERROR, e.to_string()))?;
+  if let Removal::Partial { leftover, source } = removal {
+    say(
+      err,
+      format_args!(
+        "rnm: some files of {installed} are still in use ({source}); they stay in {} until \
+         a later install or uninstall deletes them",
+        leftover.display()
+      ),
+    );
+  }
   say(
     out,
     format_args!(

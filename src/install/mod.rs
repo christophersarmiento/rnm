@@ -89,6 +89,12 @@ pub enum InstallError {
   Url(InvalidUrl),
   Http(HttpError),
   Lock(LockError),
+  /// A running program has files open in the directory (Windows only; unix
+  /// lets a directory move while its files are open).
+  InUse {
+    path: PathBuf,
+    source: io::Error,
+  },
   Io {
     path: PathBuf,
     source: io::Error,
@@ -131,6 +137,12 @@ impl fmt::Display for InstallError {
       | Self::Url(e) => e.fmt(f),
       | Self::Http(e) => e.fmt(f),
       | Self::Lock(e) => e.fmt(f),
+      | Self::InUse { path, source } => write!(
+        f,
+        "{} is in use ({source}); close the programs that run it, such as node, npm, or an \
+         editor, and try again",
+        path.display()
+      ),
       | Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
     }
   }
@@ -357,7 +369,9 @@ impl Installer<'_> {
           });
         }
         if version_dir.exists() {
-          remove_dir_safely(version_dir)?;
+          // Files that cannot be deleted yet stay behind under a hidden
+          // name; a later removal deletes them.
+          let _ = remove_dir_safely(version_dir)?;
         }
         std::fs::rename(&top, version_dir).map_err(io_error(version_dir))
       });
@@ -366,23 +380,87 @@ impl Installer<'_> {
   }
 }
 
+/// What [`remove_dir_safely`] managed to delete.
+#[derive(Debug)]
+pub enum Removal {
+  /// The directory is gone.
+  Complete,
+  /// The directory was moved to `leftover`, so it no longer counts as
+  /// installed, but some files could not be deleted yet (on Windows, files
+  /// of a running program). The next removal in the same parent deletes
+  /// them once their process has exited.
+  Partial {
+    leftover: PathBuf,
+    source: io::Error,
+  },
+}
+
 /// Removes a version directory by first renaming it to a hidden name, so it
 /// stops counting as installed at once, even if deleting the files fails
-/// half way.
+/// half way. Leftovers of earlier removals whose process has exited are
+/// deleted first.
 ///
 /// # Errors
 ///
-/// Fails if the directory cannot be renamed or deleted.
-pub fn remove_dir_safely(dir: &Path) -> Result<(), InstallError> {
+/// [`InstallError::InUse`] when a running program keeps the directory from
+/// moving (Windows), and [`InstallError::Io`] when it cannot be renamed for
+/// another reason. Nothing is deleted in either case.
+pub fn remove_dir_safely(dir: &Path) -> Result<Removal, InstallError> {
   let parent = dir.parent().unwrap_or(dir);
   let name = dir
     .file_name()
     .map(|name| name.to_string_lossy().into_owned())
     .unwrap_or_default();
-  remove_leftovers(parent, &format!("{REMOVING_PREFIX}{name}-"));
+  remove_abandoned_removals(parent);
   let doomed = parent.join(format!("{REMOVING_PREFIX}{name}-{}", std::process::id()));
-  std::fs::rename(dir, &doomed).map_err(io_error(dir))?;
-  std::fs::remove_dir_all(&doomed).map_err(io_error(&doomed))
+  std::fs::rename(dir, &doomed).map_err(|source| {
+    let path = dir.to_path_buf();
+    if is_in_use(&source) {
+      InstallError::InUse { path, source }
+    } else {
+      InstallError::Io { path, source }
+    }
+  })?;
+  Ok(match std::fs::remove_dir_all(&doomed) {
+    | Ok(()) => Removal::Complete,
+    | Err(source) => Removal::Partial {
+      leftover: doomed,
+      source,
+    },
+  })
+}
+
+/// Deletes `<REMOVING_PREFIX><name>-<pid>` directories whose process is no
+/// longer running, so a removal in progress elsewhere is left alone.
+fn remove_abandoned_removals(parent: &Path) {
+  let Ok(entries) = std::fs::read_dir(parent) else {
+    return;
+  };
+  for entry in entries.flatten() {
+    let name = entry.file_name().to_string_lossy().into_owned();
+    let Some(rest) = name.strip_prefix(REMOVING_PREFIX) else {
+      continue;
+    };
+    let owner = rest
+      .rsplit_once('-')
+      .and_then(|(_, pid)| pid.parse::<u32>().ok());
+    let abandoned = owner.is_none_or(|pid| !crate::sys::is_alive(pid));
+    if abandoned {
+      let _ = std::fs::remove_dir_all(entry.path());
+    }
+  }
+}
+
+/// Windows refuses to move a directory while a file in it is open without
+/// delete sharing, which includes a running `node.exe`.
+fn is_in_use(e: &io::Error) -> bool {
+  /// `ERROR_SHARING_VIOLATION` and `ERROR_LOCK_VIOLATION`.
+  const SHARING_ERRORS: [i32; 2] = [32, 33];
+  cfg!(windows)
+    && (e.kind() == io::ErrorKind::PermissionDenied
+      || e
+        .raw_os_error()
+        .is_some_and(|code| SHARING_ERRORS.contains(&code)))
 }
 
 /// The error and its causes, so the root cause (such as "No space left on
@@ -505,8 +583,26 @@ mod tests {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("v20.0.0");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
-    std::fs::create_dir(tmp.path().join(format!("{REMOVING_PREFIX}v20.0.0-1"))).unwrap();
-    remove_dir_safely(&dir).unwrap();
-    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+    let abandoned = tmp
+      .path()
+      .join(format!("{REMOVING_PREFIX}v18.0.0-{DEAD_PID}"));
+    std::fs::create_dir(&abandoned).unwrap();
+    let in_progress = tmp
+      .path()
+      .join(format!("{REMOVING_PREFIX}v16.0.0-{}", std::process::id()));
+    std::fs::create_dir(&in_progress).unwrap();
+
+    assert!(matches!(
+      remove_dir_safely(&dir).unwrap(),
+      Removal::Complete
+    ));
+    let left: Vec<PathBuf> = std::fs::read_dir(tmp.path())
+      .unwrap()
+      .map(|e| e.unwrap().path())
+      .collect();
+    assert_eq!(left, [in_progress], "only the live removal stays");
   }
+
+  /// No process has this PID: PIDs are far below it on every OS rnm runs on.
+  const DEAD_PID: u32 = 4_000_000_000;
 }
