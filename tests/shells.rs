@@ -5,6 +5,10 @@
 //! (for example `bash,zsh,fish,nu,pwsh`) so a missing shell fails the test
 //! instead of being skipped.
 //!
+//! `RNM_SHELL_<NAME>` (for example `RNM_SHELL_BASH=/bin/bash`) selects a
+//! specific binary instead of the first one on `PATH`, to test the minimum
+//! supported versions.
+//!
 //! The fixture's directories contain spaces, quotes, `$`, backticks, and
 //! non-ASCII characters, so every path goes through the shells' quoting.
 
@@ -79,9 +83,25 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
     .find(|p| p.is_file())
 }
 
-/// The shell's executable. On Windows, `bash` means Git Bash; the `bash.exe`
-/// in System32 starts WSL instead.
+/// The variable that overrides where `shell` is found: `RNM_SHELL_BASH`.
+fn override_var(shell: &Shell) -> String {
+  format!("RNM_SHELL_{}", shell.name.to_ascii_uppercase())
+}
+
+/// The shell's executable: `RNM_SHELL_<NAME>` if set, else from `PATH`. On
+/// Windows, `bash` means Git Bash; the `bash.exe` in System32 starts WSL
+/// instead.
 fn locate(shell: &Shell) -> Option<PathBuf> {
+  let var = override_var(shell);
+  if let Some(program) = std::env::var_os(&var).filter(|p| !p.is_empty()) {
+    let program = PathBuf::from(program);
+    assert!(
+      program.is_file(),
+      "{var}={} is not a file",
+      program.display()
+    );
+    return Some(program);
+  }
   if WINDOWS_ONLY.contains(&shell.name) && !cfg!(windows) {
     return None;
   }
@@ -99,7 +119,8 @@ fn available() -> Vec<&'static Shell> {
   let required = std::env::var("RNM_REQUIRE_SHELLS").unwrap_or_default();
   let mut found = Vec::new();
   for shell in SHELLS {
-    if locate(shell).is_some() {
+    if let Some(program) = locate(shell) {
+      eprintln!("testing {}: {}", shell.name, program.display());
       found.push(shell);
     } else if required.split(',').any(|name| name.trim() == shell.name) {
       panic!(
@@ -111,6 +132,18 @@ fn available() -> Vec<&'static Shell> {
     }
   }
   found
+}
+
+/// The arguments that run a script file with `shell`. fish before 3.3 has no
+/// `--no-config`; the fixture's `HOME` hides the user's configuration anyway.
+fn script_args(shell: &Shell) -> &'static [&'static str] {
+  let lacks_no_config = shell.kind == ShellKind::Fish
+    && !Command::new(locate(shell).unwrap())
+      .args(["--no-config", "-c", "true"])
+      .stderr(Stdio::null())
+      .status()
+      .is_ok_and(|status| status.success());
+  if lacks_no_config { &[] } else { shell.args }
 }
 
 /// A fake install tree with three versions whose `node` prints its version.
@@ -145,7 +178,7 @@ impl Fixture {
     let file = self.root.join(format!("script.{}", shell.extension));
     std::fs::write(&file, script).unwrap();
     let mut command = self.command(shell);
-    command.args(shell.args).arg(&file);
+    command.args(script_args(shell)).arg(&file);
     Self::finish(shell, &mut command, None)
   }
 
@@ -158,8 +191,11 @@ impl Fixture {
   }
 
   /// The shell, started in the fixture with only the fixture's install tree
-  /// visible. On unix the environment is cleared. Windows shells need many
-  /// system variables, so there only rnm's variables are removed.
+  /// visible. On unix the environment is cleared, and the shell's own
+  /// directory comes first in `PATH`, so a shell chosen with
+  /// `RNM_SHELL_<NAME>` is not shadowed by another version of it. Windows
+  /// shells need many system variables, so there only rnm's variables are
+  /// removed.
   fn command(&self, shell: &Shell) -> Command {
     let program = locate(shell).unwrap();
     let rnm_dir = Path::new(RNM).parent().unwrap().to_path_buf();
@@ -168,10 +204,11 @@ impl Fixture {
       std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect()
     } else {
       command.env_clear();
-      ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"]
-        .map(PathBuf::from)
+      program
+        .parent()
+        .map(Path::to_path_buf)
         .into_iter()
-        .chain(program.parent().map(Path::to_path_buf))
+        .chain(["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"].map(PathBuf::from))
         .collect()
     };
     for (key, _) in std::env::vars_os() {
@@ -192,6 +229,11 @@ impl Fixture {
       .env("NVM_DIR", self.root.join("nvm"))
       .env("XDG_STATE_HOME", self.root.join("state"))
       .env("PWD", &self.root);
+    if shell.kind == ShellKind::Fish && !cfg!(windows) {
+      // fish 3.1 does not assume UTF-8 in the C locale, so it would mangle
+      // the fixture's `é`. Users run it with a UTF-8 locale.
+      command.env("LC_CTYPE", "C.UTF-8");
+    }
     command
   }
 
@@ -485,7 +527,7 @@ fn completions_load_in_each_shell() {
       ),
       | ShellKind::Fish => (
         "rnm completions --shell fish | source; or exit 1\n\
-         complete -C 'rnm ls-r' | string split -f1 \\t\n"
+         complete -C 'rnm ls-r' | string replace -r '\\t.*' ''\n"
           .to_owned(),
         "ls-remote\n",
       ),

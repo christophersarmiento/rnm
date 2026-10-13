@@ -9,7 +9,8 @@ mod support;
 use std::ffi::OsString;
 use std::io::Read;
 
-use rnm::http::{Client, Conditional, HttpError, Mirror, Url};
+use rnm::config::Config;
+use rnm::http::{Client, Conditional, HttpError, Network, Url};
 use support::{Reply, Seen, serve, unused_port};
 
 const TOKEN: &str = "Bearer s3cret";
@@ -22,14 +23,14 @@ fn mirror_client(mirror_url: &str, token: Option<&str>) -> Client {
   .into_iter()
   .filter_map(|(key, value)| Some((key, value?)))
   .collect();
-  let mirror = Mirror::from_env(|key| {
+  Network::from_env(|key| {
     vars
       .iter()
       .find(|(k, _)| *k == key)
       .map(|(_, v)| OsString::from(v))
   })
-  .unwrap();
-  Client::for_mirror(&mirror)
+  .unwrap()
+  .client
 }
 
 fn get(client: &Client, url: &str) -> Result<(String, Option<String>), HttpError> {
@@ -233,5 +234,125 @@ fn unexpected_not_modified_is_an_error() {
   assert!(
     matches!(error, HttpError::Status { status: 304, .. }),
     "{error}"
+  );
+}
+
+fn config_client(config: &str, vars: &[(&str, &str)]) -> Client {
+  let config = Config::parse(config).unwrap();
+  let vars: Vec<(String, OsString)> = vars
+    .iter()
+    .map(|(k, v)| ((*k).to_owned(), OsString::from(v)))
+    .collect();
+  Network::from_settings(
+    &config,
+    |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()),
+    false,
+  )
+  .unwrap()
+  .client
+}
+
+#[test]
+fn sends_config_headers_only_under_their_prefix() {
+  let (mirror, seen) = serve(|_| Reply::ok("ok"));
+  let client = config_client(
+    &format!(
+      "[[auth]]\nprefix = \"{mirror}/private/\"\nheader = \"PRIVATE-TOKEN\"\n\
+       value_env = \"GITLAB_TOKEN\"\n\
+       [[auth]]\nprefix = \"{mirror}/private/deeper/\"\nvalue = \"Bearer deeper\"\n"
+    ),
+    &[("GITLAB_TOKEN", "glpat-1")],
+  );
+  get(&client, &format!("{mirror}/private/a")).unwrap();
+  get(&client, &format!("{mirror}/private/deeper/b")).unwrap();
+  get(&client, &format!("{mirror}/public/c")).unwrap();
+  let header = |path: &str, name: &str| {
+    seen
+      .lock()
+      .unwrap()
+      .iter()
+      .find(|request| request.path == path)
+      .and_then(|request| request.header(name).map(str::to_owned))
+  };
+  assert_eq!(
+    header("/private/a", "private-token").as_deref(),
+    Some("glpat-1")
+  );
+  assert_eq!(header("/private/deeper/b", "private-token"), None);
+  assert_eq!(
+    header("/private/deeper/b", "authorization").as_deref(),
+    Some("Bearer deeper")
+  );
+  assert_eq!(header("/public/c", "private-token"), None);
+  assert_eq!(header("/public/c", "authorization"), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn runs_credential_helpers_once_and_only_when_needed() {
+  let tmp = tempfile::tempdir().unwrap();
+  let runs = tmp.path().join("runs");
+  let (mirror, seen) = serve(|_| Reply::ok("ok"));
+  let client = config_client(
+    &format!(
+      "[[auth]]\nprefix = \"{mirror}/dist/\"\nscheme = \"Bearer\"\n\
+       command = [\"sh\", \"-c\", \"echo run >> '{}'; echo short-lived\"]\n",
+      runs.display()
+    ),
+    &[],
+  );
+  get(&client, &format!("{mirror}/other")).unwrap();
+  assert!(
+    !runs.exists(),
+    "the helper ran for a request outside its prefix"
+  );
+  get(&client, &format!("{mirror}/dist/index.json")).unwrap();
+  get(&client, &format!("{mirror}/dist/v20/SHASUMS256.txt")).unwrap();
+  assert_eq!(std::fs::read_to_string(&runs).unwrap().lines().count(), 1);
+  assert_eq!(
+    authorization_for(&seen, "/dist/v20/SHASUMS256.txt").as_deref(),
+    Some("Bearer short-lived")
+  );
+}
+
+#[cfg(unix)]
+#[test]
+fn reports_failing_credential_helpers() {
+  let (mirror, seen) = serve(|_| Reply::ok("ok"));
+  let client = config_client(
+    &format!(
+      "[[auth]]\nprefix = \"{mirror}/\"\ncommand = [\"sh\", \"-c\", \"echo expired >&2; exit 1\"]\n"
+    ),
+    &[],
+  );
+  let error = get(&client, &format!("{mirror}/dist/index.json")).unwrap_err();
+  assert!(matches!(error, HttpError::Credential { .. }), "{error}");
+  assert!(error.to_string().contains("expired"), "{error}");
+  assert!(seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn uses_netrc_and_url_credentials() {
+  let tmp = tempfile::tempdir().unwrap();
+  let (mirror, seen) = serve(|_| Reply::ok("ok"));
+  let netrc = tmp.path().join("netrc");
+  std::fs::write(&netrc, "machine 127.0.0.1 login user password pass\n").unwrap();
+  let client = config_client("", &[("NETRC", netrc.to_str().unwrap())]);
+  get(&client, &format!("{mirror}/a")).unwrap();
+  assert_eq!(
+    authorization_for(&seen, "/a").as_deref(),
+    Some("Basic dXNlcjpwYXNz")
+  );
+
+  let with_userinfo = mirror.replace("http://", "http://me:secret@");
+  let network = Network::from_env(|key| {
+    (key == "RNM_NODE_MIRROR").then(|| OsString::from(format!("{with_userinfo}/dist")))
+  })
+  .unwrap();
+  assert_eq!(network.mirror().url.to_string(), format!("{mirror}/dist"));
+  get(&network.client, &format!("{mirror}/dist/index.json")).unwrap();
+  assert_eq!(
+    authorization_for(&seen, "/dist/index.json").as_deref(),
+    Some("Basic bWU6c2VjcmV0")
   );
 }

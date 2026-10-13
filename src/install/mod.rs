@@ -62,6 +62,8 @@ pub enum Event<'a> {
   /// `--offline`: unpacking an archive from the cache without checking it
   /// against `SHASUMS256.txt` again.
   UsingCachedOffline { path: &'a Path },
+  /// A mirror failed, so the next one is tried.
+  TryingNextMirror { error: String },
 }
 
 /// Why an install failed.
@@ -91,6 +93,8 @@ pub enum InstallError {
   },
   Url(InvalidUrl),
   Http(HttpError),
+  /// The mirror list is empty.
+  NoMirror,
   Lock(LockError),
   /// `--offline`: the cache has no archive of this version for this
   /// platform.
@@ -117,10 +121,13 @@ impl fmt::Display for InstallError {
           f,
           "node {version} has no prebuilt binary for this platform ({file_id})"
         )?;
-        if file_id.ends_with("-musl") {
+        let unofficial_only =
+          file_id.ends_with("-musl") || file_id.contains("riscv64") || file_id.contains("loong64");
+        if unofficial_only {
           f.write_str(
-            "; musl builds are published on https://unofficial-builds.nodejs.org: set \
-             RNM_NODE_MIRROR=https://unofficial-builds.nodejs.org/download/release",
+            "; unofficial-builds.nodejs.org publishes builds for it: set \
+             RNM_UNOFFICIAL_BUILDS=1, or unofficial_builds = true in the [mirror] section of \
+             config.toml",
           )?;
         }
         Ok(())
@@ -144,6 +151,7 @@ impl fmt::Display for InstallError {
       },
       | Self::Url(e) => e.fmt(f),
       | Self::Http(e) => e.fmt(f),
+      | Self::NoMirror => f.write_str("no mirror is configured"),
       | Self::Lock(e) => e.fmt(f),
       | Self::NotCached { version } => write!(
         f,
@@ -161,6 +169,18 @@ impl fmt::Display for InstallError {
 }
 
 impl std::error::Error for InstallError {}
+
+impl InstallError {
+  /// Another mirror might have a good copy: this one cannot be reached,
+  /// is overloaded, or lacks the files.
+  fn allows_fallback(&self) -> bool {
+    match self {
+      | Self::Http(error) => error.allows_fallback(),
+      | Self::NoChecksum { .. } => true,
+      | _ => false,
+    }
+  }
+}
 
 impl From<HttpError> for InstallError {
   fn from(e: HttpError) -> Self {
@@ -190,7 +210,9 @@ fn io_error(path: &Path) -> impl FnOnce(io::Error) -> InstallError + '_ {
 /// Installs releases from one mirror into one tree.
 pub struct Installer<'a> {
   pub nvm_dir: &'a NvmDir,
-  pub mirror: &'a Mirror,
+  /// Tried in order; the next one is used when a mirror cannot be reached
+  /// or lacks the files.
+  pub mirrors: &'a [Mirror],
   pub client: &'a Client,
   pub platform: &'a Platform,
   pub lock: LockSettings,
@@ -238,14 +260,47 @@ impl Installer<'_> {
       return Ok(installed);
     }
 
-    let chosen = self.choose_archive(version, &artifact)?;
-    let archive = self.fetch_archive(&artifact, &chosen, events)?;
-    unpack_into_place(self.nvm_dir, chosen.kind, &archive, &version_dir)?;
+    let (kind, archive) = self.fetch_from_mirrors(version, &artifact, events)?;
+    unpack_into_place(self.nvm_dir, kind, &archive, &version_dir)?;
     installed_from(self.nvm_dir, &version_dir, archive)
   }
 
-  fn choose_archive(&self, version: &Version, artifact: &Artifact) -> Result<Chosen, InstallError> {
-    let release_dir = self.mirror.url.child(&version.to_string())?;
+  /// The verified archive from the first mirror that has it.
+  fn fetch_from_mirrors(
+    &self,
+    version: &Version,
+    artifact: &Artifact,
+    events: &mut dyn FnMut(Event<'_>),
+  ) -> Result<(ArchiveKind, PathBuf), InstallError> {
+    let mut first_error = None;
+    for (position, mirror) in self.mirrors.iter().enumerate() {
+      let attempt = self
+        .choose_archive(mirror, version, artifact)
+        .and_then(|chosen| {
+          let archive = self.fetch_archive(artifact, &chosen, events)?;
+          Ok((chosen.kind, archive))
+        });
+      match attempt {
+        | Ok(found) => return Ok(found),
+        | Err(error) if error.allows_fallback() && position + 1 < self.mirrors.len() => {
+          events(Event::TryingNextMirror {
+            error: error.to_string(),
+          });
+          first_error.get_or_insert(error);
+        },
+        | Err(error) => return Err(first_error.unwrap_or(error)),
+      }
+    }
+    Err(first_error.unwrap_or(InstallError::NoMirror))
+  }
+
+  fn choose_archive(
+    &self,
+    mirror: &Mirror,
+    version: &Version,
+    artifact: &Artifact,
+  ) -> Result<Chosen, InstallError> {
+    let release_dir = mirror.url.child(&version.to_string())?;
     let shasums_url = release_dir.child(SHASUMS_FILE)?;
     let mut shasums = String::new();
     self

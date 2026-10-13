@@ -4,8 +4,7 @@ use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::{Context, DEFAULT_ALIAS, Failure, exit, say};
-use crate::http::{Client, Mirror};
+use super::{Context, DEFAULT_ALIAS, Failure, exit, network, say};
 use crate::multishell::Target;
 use crate::nvm_dir::{NODE_EXECUTABLE, Resolved, is_executable};
 use crate::platform::Platform;
@@ -345,32 +344,39 @@ fn other_managers(ctx: &Context) -> Finding {
 /// The mirror settings are valid and the index downloads with them.
 fn mirror(ctx: &Context) -> Finding {
   const TOPIC: &str = "mirror";
-  let mirror = match Mirror::from_env(|key| ctx.var(key)) {
-    | Ok(mirror) => mirror,
-    | Err(e) => return Finding::new(Status::Fail, TOPIC, e.to_string()),
+  let network = match network(ctx, &mut std::io::sink()) {
+    | Ok(network) => network,
+    | Err(e) => return Finding::new(Status::Fail, TOPIC, e.message),
   };
-  let auth = mirror.credential.as_ref().map_or_else(
-    || "no credential".to_owned(),
-    |c| format!("credential from {}", c.source),
-  );
-  let client = Client::for_mirror(&mirror);
-  match load_index(&client, &mirror, &ctx.nvm_dir.cache_dir()) {
-    | Ok(loaded) if loaded.warnings.is_empty() => Finding::new(
-      Status::Ok,
-      TOPIC,
-      format!(
-        "{} answers ({auth}, {} releases)",
-        mirror.url,
-        loaded.index.releases().len()
-      ),
-    ),
+  let auth = if network.credential_sources.is_empty() {
+    "no credentials".to_owned()
+  } else {
+    format!("credentials from {}", network.credential_sources.join(", "))
+  };
+  let fallbacks = network.mirrors.len() - 1;
+  let fallback_note = match fallbacks {
+    | 0 => String::new(),
+    | 1 => ", 1 fallback mirror".to_owned(),
+    | n => format!(", {n} fallback mirrors"),
+  };
+  let mut problems: Vec<String> = network.warnings.clone();
+  match load_index(&network.client, &network.mirrors, &ctx.nvm_dir.cache_dir()) {
     | Ok(loaded) => {
-      let warnings: Vec<String> = loaded.warnings.iter().map(ToString::to_string).collect();
-      Finding::new(
-        Status::Fail,
-        TOPIC,
-        format!("{} ({auth}): {}", mirror.url, warnings.join("; ")),
-      )
+      problems.extend(loaded.warnings.iter().map(ToString::to_string));
+      let served = &network.mirrors[loaded.mirror].url;
+      let summary = format!(
+        "{served} answers ({auth}{fallback_note}, {} releases)",
+        loaded.index.releases().len()
+      );
+      if problems.is_empty() {
+        Finding::new(Status::Ok, TOPIC, summary)
+      } else {
+        Finding::new(
+          Status::Fail,
+          TOPIC,
+          format!("{summary}: {}", problems.join("; ")),
+        )
+      }
     },
     | Err(e) => Finding::new(Status::Fail, TOPIC, format!("{e} ({auth})")),
   }

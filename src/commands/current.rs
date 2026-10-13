@@ -43,10 +43,16 @@ pub fn active(ctx: &Context) -> Result<String, Failure> {
   Ok(from_path(ctx))
 }
 
+/// The version in `dir`, which may also be a link to a version directory
+/// (`rnm default --persist`'s `<root>/default`).
 fn label_for_version_dir(ctx: &Context, dir: &std::path::Path) -> String {
   ctx
     .nvm_dir
     .installed_at(dir)
+    .or_else(|| {
+      let target = crate::fs::read_dir_link(dir).ok()?;
+      ctx.nvm_dir.installed_at(&target)
+    })
     .map_or_else(|| NONE_LABEL.to_owned(), |installed| installed.to_string())
 }
 

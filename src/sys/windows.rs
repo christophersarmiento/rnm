@@ -1,4 +1,5 @@
-//! Windows implementation: one Toolhelp snapshot per call.
+//! Windows implementation: one Toolhelp snapshot per call, plus registry
+//! access.
 
 #![allow(unsafe_code)]
 
@@ -11,12 +12,17 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
   CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Registry::{
-  HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW,
+  HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, REG_EXPAND_SZ, REG_ROUTINE_FLAGS, REG_SZ,
+  REG_VALUE_TYPE, RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ,
+  RegGetValueW, RegSetKeyValueW,
 };
 use windows_sys::Win32::System::SystemInformation::{IMAGE_FILE_MACHINE, IMAGE_FILE_MACHINE_ARM64};
 use windows_sys::Win32::System::Threading::{
   GetCurrentProcess, GetExitCodeProcess, IsWow64Process2, OpenProcess,
   PROCESS_QUERY_LIMITED_INFORMATION,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+  HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
 };
 
 use super::{Process, ProcessInfo};
@@ -138,22 +144,141 @@ pub enum Hive {
 /// is missing or not a string.
 #[must_use]
 pub fn registry_string(hive: Hive, subkey: &str, name: &str) -> Option<String> {
-  let root = match hive {
-    | Hive::CurrentUser => HKEY_CURRENT_USER,
-    | Hive::LocalMachine => HKEY_LOCAL_MACHINE,
+  let (_, units) = registry_value(hive, subkey, name, RRF_RT_REG_SZ)?;
+  Some(String::from_utf16_lossy(until_nul(&units)))
+}
+
+/// The `REG_MULTI_SZ` value `name` under `subkey`, one string per entry.
+#[must_use]
+pub fn registry_strings(hive: Hive, subkey: &str, name: &str) -> Option<Vec<String>> {
+  let (_, units) = registry_value(hive, subkey, name, RRF_RT_REG_MULTI_SZ)?;
+  Some(
+    units
+      .split(|&unit| unit == 0)
+      .filter(|entry| !entry.is_empty())
+      .map(String::from_utf16_lossy)
+      .collect(),
+  )
+}
+
+/// A registry string as stored, `%VARIABLES%` unexpanded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawRegistryString {
+  pub value: String,
+  /// `REG_EXPAND_SZ` (as opposed to `REG_SZ`).
+  pub expandable: bool,
+}
+
+/// The `REG_SZ` or `REG_EXPAND_SZ` value `name` under `subkey`, without
+/// expanding `%VARIABLES%`, so it can be written back unchanged.
+#[must_use]
+pub fn registry_raw_string(hive: Hive, subkey: &str, name: &str) -> Option<RawRegistryString> {
+  let (kind, units) = registry_value(
+    hive,
+    subkey,
+    name,
+    RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
+  )?;
+  Some(RawRegistryString {
+    value: String::from_utf16_lossy(until_nul(&units)),
+    expandable: kind == REG_EXPAND_SZ,
+  })
+}
+
+/// Writes a `REG_SZ` or `REG_EXPAND_SZ` value, creating the key if needed.
+///
+/// # Errors
+///
+/// The Win32 error, for example when access is denied.
+pub fn set_registry_string(
+  hive: Hive,
+  subkey: &str,
+  name: &str,
+  value: &RawRegistryString,
+) -> std::io::Result<()> {
+  let subkey = wide(subkey);
+  let name = wide(name);
+  let data = wide(&value.value);
+  let kind = if value.expandable {
+    REG_EXPAND_SZ
+  } else {
+    REG_SZ
   };
+  let bytes = u32::try_from(data.len() * 2)
+    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+  // SAFETY: the strings are NUL-terminated and `data` holds `bytes` bytes.
+  let status = unsafe {
+    RegSetKeyValueW(
+      hive.key(),
+      subkey.as_ptr(),
+      name.as_ptr(),
+      kind,
+      data.as_ptr().cast(),
+      bytes,
+    )
+  };
+  if status == ERROR_SUCCESS {
+    Ok(())
+  } else {
+    Err(std::io::Error::from_raw_os_error(
+      i32::try_from(status).unwrap_or(i32::MAX),
+    ))
+  }
+}
+
+/// How long to wait for each window to handle the broadcast.
+const BROADCAST_TIMEOUT_MS: u32 = 5000;
+
+/// Tells running programs (Explorer, and through it new GUI apps) that the
+/// user's environment variables changed, as the System Properties dialog
+/// does.
+pub fn broadcast_environment_change() {
+  let area = wide("Environment");
+  let mut result = 0usize;
+  // SAFETY: `area` is NUL-terminated and outlives the call; the result
+  // pointer is valid.
+  unsafe {
+    SendMessageTimeoutW(
+      HWND_BROADCAST,
+      WM_SETTINGCHANGE,
+      0,
+      area.as_ptr() as isize,
+      SMTO_ABORTIFHUNG,
+      BROADCAST_TIMEOUT_MS,
+      &raw mut result,
+    );
+  }
+}
+
+impl Hive {
+  fn key(self) -> HKEY {
+    match self {
+      | Self::CurrentUser => HKEY_CURRENT_USER,
+      | Self::LocalMachine => HKEY_LOCAL_MACHINE,
+    }
+  }
+}
+
+/// The value's type and its data as UTF-16 units.
+fn registry_value(
+  hive: Hive,
+  subkey: &str,
+  name: &str,
+  flags: REG_ROUTINE_FLAGS,
+) -> Option<(REG_VALUE_TYPE, Vec<u16>)> {
   let subkey = wide(subkey);
   let name = wide(name);
   let mut size = 0u32;
+  let mut kind: REG_VALUE_TYPE = 0;
   // SAFETY: both strings are NUL-terminated; a null buffer asks for the
   // size in bytes, including the terminating NUL.
   let status = unsafe {
     RegGetValueW(
-      root,
+      hive.key(),
       subkey.as_ptr(),
       name.as_ptr(),
-      RRF_RT_REG_SZ,
-      std::ptr::null_mut(),
+      flags,
+      &raw mut kind,
       std::ptr::null_mut(),
       &raw mut size,
     )
@@ -165,11 +290,11 @@ pub fn registry_string(hive: Hive, subkey: &str, name: &str) -> Option<String> {
   // SAFETY: `buffer` holds `size` bytes, as `size` tells the call.
   let status = unsafe {
     RegGetValueW(
-      root,
+      hive.key(),
       subkey.as_ptr(),
       name.as_ptr(),
-      RRF_RT_REG_SZ,
-      std::ptr::null_mut(),
+      flags,
+      &raw mut kind,
       buffer.as_mut_ptr().cast(),
       &raw mut size,
     )
@@ -177,8 +302,13 @@ pub fn registry_string(hive: Hive, subkey: &str, name: &str) -> Option<String> {
   if status != ERROR_SUCCESS {
     return None;
   }
-  let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
-  Some(String::from_utf16_lossy(&buffer[..len]))
+  buffer.truncate(usize::try_from(size).ok()?.div_ceil(2));
+  Some((kind, buffer))
+}
+
+fn until_nul(units: &[u16]) -> &[u16] {
+  let len = units.iter().position(|&c| c == 0).unwrap_or(units.len());
+  &units[..len]
 }
 
 fn wide(text: &str) -> Vec<u16> {

@@ -83,7 +83,7 @@ pub(crate) fn requested_spec(
   let spec_text = match (&opts.lts, &opts.version) {
     | (Some(lts), _) => format!("{LTS_PREFIX}{lts}"),
     | (None, Some(version)) => version.clone(),
-    | (None, None) if opts.from_hook => match find_version_file(&ctx.cwd, VersionFileKind::DEFAULT)
+    | (None, None) if opts.from_hook => match find_version_file(&ctx.cwd, ctx.version_file_kinds())
     {
       | Some((path, kind)) => load_version_file(&path, kind)?.version,
       | None if has_default_alias(ctx) => DEFAULT_ALIAS.to_owned(),
@@ -201,12 +201,17 @@ struct Switched {
   saved: String,
 }
 
-/// The nearest `.nvmrc` or `.node-version`, parsed.
+/// The nearest version file, parsed.
 pub(crate) fn version_file(ctx: &Context) -> Result<VersionFile, Failure> {
-  let (path, kind) = find_version_file(&ctx.cwd, VersionFileKind::DEFAULT).ok_or_else(|| {
+  let kinds = ctx.version_file_kinds();
+  let (path, kind) = find_version_file(&ctx.cwd, kinds).ok_or_else(|| {
+    let names: Vec<&str> = kinds.iter().map(|kind| kind.file_name()).collect();
     Failure::new(
       exit::NO_VERSION,
-      "No version provided and no .nvmrc or .node-version file found",
+      format!(
+        "No version provided and no {} file found",
+        names.join(" or ")
+      ),
     )
   })?;
   load_version_file(&path, kind)

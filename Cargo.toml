@@ -11,15 +11,18 @@ keywords = ["node", "nodejs", "nvm", "version-manager"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 clap = { version = "4.6.7", default-features = false, features = ["std", "help", "usage", "error-context", "suggestions", "derive", "string"] }
 clap_complete = "4.6.11"
 clap_complete_nushell = "4.6.2"
 flate2 = "1.1.10"
 lzma-rust2 = { version = "0.22.0", default-features = false, features = ["std", "optimization", "xz"] }
+percent-encoding = "2.3.2"
 ring = "0.17.14"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
 tar = { version = "0.4.46", default-features = false }
+toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
 ureq = { version = "3.4.2", features = ["platform-verifier"] }
 
 [profile.release]
@@ -44,5 +47,5 @@ libc = "0.2.190"
 
 [target."cfg(windows)".dependencies]
 junction = "2.1.0"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 zip = { version = "9.0.2", default-features = false, features = ["deflate-flate2"] }

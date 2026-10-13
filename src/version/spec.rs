@@ -8,6 +8,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use super::exact::{ParseVersionError, Version, parse_number};
+use super::range::{NodeRange, ParseRangeError};
 
 /// The prefix of LTS specs and alias names: `lts/*`, `lts/iron`.
 pub const LTS_PREFIX: &str = "lts/";
@@ -113,6 +114,9 @@ pub enum VersionSpec {
   /// Any other name: a user alias such as `default`, followed through
   /// `alias/<name>` files during resolution.
   Alias(Box<str>),
+  /// An npm semver range, as `package.json` writes them: `>=18 <21`, `^20.1`,
+  /// `20.x`. Not part of nvm's grammar; see [`looks_like_range`].
+  Range(NodeRange),
 }
 
 /// Why a string is not a valid version spec.
@@ -131,6 +135,8 @@ pub enum SpecError {
   InvalidVersion(ParseVersionError),
   /// Not a valid alias name.
   InvalidAlias(String),
+  /// Written like an npm range, but not a valid one.
+  InvalidRange(ParseRangeError),
 }
 
 impl fmt::Display for SpecError {
@@ -149,6 +155,7 @@ impl fmt::Display for SpecError {
       },
       | Self::InvalidVersion(e) => e.fmt(f),
       | Self::InvalidAlias(s) => write!(f, "'{s}' is not a valid version or alias name"),
+      | Self::InvalidRange(e) => e.fmt(f),
     }
   }
 }
@@ -157,6 +164,7 @@ impl std::error::Error for SpecError {
   fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
     match self {
       | Self::InvalidVersion(e) => Some(e),
+      | Self::InvalidRange(e) => Some(e),
       | _ => None,
     }
   }
@@ -180,6 +188,12 @@ impl FromStr for VersionSpec {
 
     if let Some(rest) = input.strip_prefix(LTS_PREFIX) {
       return parse_lts(input, rest).map(Self::Lts);
+    }
+    if looks_like_range(input) {
+      return input
+        .parse()
+        .map(Self::Range)
+        .map_err(SpecError::InvalidRange);
     }
     if let Some(rest) = input.strip_prefix(IOJS_PREFIX) {
       return rest
@@ -221,6 +235,20 @@ fn parse_lts(input: &str, rest: &str) -> Result<LtsSpec, SpecError> {
   Err(SpecError::InvalidLts(input.to_owned()))
 }
 
+/// Characters that only appear in npm ranges, never in nvm's versions, and
+/// (in practice) never in alias names.
+const RANGE_MARKERS: &[char] = &['<', '>', '=', '^', '~', '|', '*', ' '];
+
+/// Written as an npm range rather than in nvm's grammar: it has an operator,
+/// a space, or an `x` component (`20.x`, `1.2.X`). A bare `x` stays an
+/// alias name.
+#[must_use]
+pub fn looks_like_range(input: &str) -> bool {
+  let has_wildcard_component =
+    input.contains('.') && input.split('.').any(|part| matches!(part, "x" | "X" | "*"));
+  input.trim().contains(RANGE_MARKERS) || has_wildcard_component
+}
+
 /// A digit, or `v` followed by a digit. nvm treats these as versions
 /// (`nvm_ensure_version_prefix` adds the `v` only before a digit).
 fn looks_like_version(input: &str) -> bool {
@@ -260,6 +288,7 @@ impl fmt::Display for VersionSpec {
       | Self::Lts(LtsSpec::Offset(n)) => write!(f, "{LTS_PREFIX}-{n}"),
       | Self::Lts(LtsSpec::Named(name)) => write!(f, "{LTS_PREFIX}{name}"),
       | Self::Alias(name) => f.write_str(name),
+      | Self::Range(range) => range.fmt(f),
     }
   }
 }
@@ -274,6 +303,31 @@ mod tests {
 
   fn version(s: &str) -> Version {
     s.parse().unwrap()
+  }
+
+  #[test]
+  fn parses_npm_ranges() {
+    for text in [
+      ">=18 <21", "^20.1", "~18.2.0", "20.x", "v20.X", "*", "18 || 20", "=20.1.0",
+    ] {
+      let parsed = spec(text);
+      assert!(
+        matches!(parsed, VersionSpec::Range(_)),
+        "{text}: {parsed:?}"
+      );
+      assert_eq!(parsed.to_string(), text);
+      assert_eq!(spec(&parsed.to_string()), parsed);
+    }
+    assert!(matches!(
+      ">=abc".parse::<VersionSpec>(),
+      Err(SpecError::InvalidRange(_))
+    ));
+    assert_eq!(spec("x"), VersionSpec::Alias("x".into()));
+    assert_eq!(
+      spec("18.1."),
+      VersionSpec::Version(VersionReq::MajorMinor(18, 1))
+    );
+    assert!(matches!(spec("lts/*"), VersionSpec::Lts(LtsSpec::Latest)));
   }
 
   #[test]
@@ -317,7 +371,6 @@ mod tests {
     for bad in [
       "18..1",
       "18.1.0.0",
-      "v18.x",
       "18-rc.1",
       "18.1-rc.1",
       "1e3",
@@ -408,12 +461,17 @@ mod tests {
 
   #[test]
   fn rejects_bad_aliases() {
-    for bad in [".", "..", "a/b", "a\\b", "a b", "a#b", "a\tb"] {
+    for bad in [".", "..", "a/b", "a\\b", "a#b", "a\tb"] {
       assert!(
         matches!(bad.parse::<VersionSpec>(), Err(SpecError::InvalidAlias(_))),
         "{bad:?} should be InvalidAlias"
       );
     }
+    // A space marks an npm range, so this fails as one.
+    assert!(matches!(
+      "a b".parse::<VersionSpec>(),
+      Err(SpecError::InvalidRange(_))
+    ));
     assert_eq!("".parse::<VersionSpec>(), Err(SpecError::Empty));
   }
 

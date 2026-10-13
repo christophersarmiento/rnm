@@ -5,13 +5,16 @@
 mod alias;
 mod colors;
 mod current;
+mod default_version;
 mod doctor;
 mod env;
 mod exec;
+mod import;
 mod install;
 mod listing;
 mod ls;
 mod ls_remote;
+mod packages;
 mod uninstall;
 mod use_version;
 mod which;
@@ -23,21 +26,30 @@ use std::path::{Path, PathBuf};
 
 pub use alias::{alias, unalias};
 pub use current::current;
+pub use default_version::{Persistence, default_version};
 pub use doctor::doctor;
 pub use env::{EnvOptions, env};
 pub use exec::{ExecOptions, exec};
+pub use import::{ImportMode, ImportOptions, import_nvm_windows};
 pub use install::{InstallOptions, Progress, install};
 pub use ls::{LsOptions, ls};
 pub use ls_remote::{LsRemoteOptions, Order, ls_remote};
+pub use packages::{DEFAULT_PACKAGES_FILE, install_latest_npm_command, reinstall_packages_command};
 pub use uninstall::uninstall;
 pub use use_version::{UseOptions, use_version};
 pub use which::which;
 
-use crate::http::{Client, Mirror};
+use crate::config::{Config, env_flag};
+use crate::http::{Mirror, Network};
 use crate::multishell::{self, Multishells, Session};
 use crate::nvm_dir::{AliasError, NODE_EXECUTABLE, NvmDir, global_modules_dir, is_executable};
+use crate::platform::Platform;
 use crate::remote::{RemoteIndex, load_index, refresh_lts_aliases};
 use crate::shell::{Inferred, ShellKind};
+use crate::version::VersionFileKind;
+
+/// Turn on `package.json` as a version file, highest precedence first.
+const RESOLVE_ENGINES_VARS: [&str; 2] = ["RNM_RESOLVE_ENGINES", "FNM_RESOLVE_ENGINES"];
 
 /// What nvm prints for "no version is active".
 pub const NONE_LABEL: &str = "none";
@@ -60,8 +72,14 @@ pub struct Failure {
 pub mod exit {
   /// General error.
   pub const ERROR: u8 = 1;
+  /// `reinstall-packages` from the active version.
+  pub const SAME_AS_CURRENT: u8 = 2;
   /// The requested version is not installed or not available.
   pub const NOT_AVAILABLE: u8 = 3;
+  /// `install --reinstall-packages-from` the version being installed.
+  pub const SAME_AS_INSTALLING: u8 = 4;
+  /// The `--reinstall-packages-from` version is not installed.
+  pub const SOURCE_NOT_INSTALLED: u8 = 5;
   /// An alias chain loops.
   pub const ALIAS_LOOP: u8 = 8;
   /// No version given and none found in a version file, or usage error.
@@ -114,6 +132,8 @@ pub struct Context {
   pub session: Option<Session>,
   /// Reads other environment variables.
   pub var: EnvReader,
+  /// `config.toml`.
+  pub config: Config,
 }
 
 impl Context {
@@ -121,9 +141,11 @@ impl Context {
   ///
   /// # Errors
   ///
-  /// Fails if the install tree cannot be located.
+  /// Fails if the install tree cannot be located or `config.toml` cannot
+  /// be read.
   pub fn from_env() -> Result<Self, Failure> {
     let var = |key: &str| std::env::var_os(key);
+    let config = Config::load(var).map_err(|e| Failure::new(exit::ERROR, e.to_string()))?;
     let nvm_dir = NvmDir::locate_with(var).map_err(|e| Failure::new(exit::ERROR, e.to_string()))?;
     let multishells = Multishells::locate_with(var, &nvm_dir);
     let cwd = logical_cwd(var("PWD"))?;
@@ -140,6 +162,7 @@ impl Context {
       path,
       session,
       var: Box::new(var),
+      config,
     })
   }
 
@@ -153,6 +176,21 @@ impl Context {
   #[must_use]
   pub fn var_string(&self, key: &str) -> Option<String> {
     self.var(key).map(|v| v.to_string_lossy().into_owned())
+  }
+
+  /// The version files to look for: `.nvmrc` and `.node-version`, plus
+  /// `package.json` when `RNM_RESOLVE_ENGINES` (or fnm's
+  /// `FNM_RESOLVE_ENGINES`) or `version_files.package_json` turns it on.
+  #[must_use]
+  pub fn version_file_kinds(&self) -> &'static [VersionFileKind] {
+    let reads_package_json = env_flag(|key| self.var(key), &RESOLVE_ENGINES_VARS)
+      .or(self.config.version_files.package_json)
+      .unwrap_or(false);
+    if reads_package_json {
+      VersionFileKind::WITH_PACKAGE_JSON
+    } else {
+      VersionFileKind::DEFAULT
+    }
   }
 
   /// `dir` is inside the install tree or a session link, so it belongs to
@@ -216,6 +254,38 @@ fn json_string_field(text: &str, key: &str) -> Option<String> {
   Some(value[..value.find('"')?].to_owned())
 }
 
+/// The mirrors and HTTP client from `config.toml` and the environment.
+/// Warnings go to `err`.
+///
+/// # Errors
+///
+/// Exit code 1 when the settings are invalid.
+pub(crate) fn network(ctx: &Context, err: &mut dyn Write) -> Result<Network, Failure> {
+  let needs_unofficial_builds = Platform::detect().is_ok_and(|p| p.needs_unofficial_builds());
+  let network = Network::from_settings(&ctx.config, |key| ctx.var(key), needs_unofficial_builds)
+    .map_err(|e| Failure::new(exit::ERROR, e.to_string()))?;
+  for warning in &network.warnings {
+    say(err, warning);
+  }
+  Ok(network)
+}
+
+/// The mirror's version index and the network settings that loaded it.
+pub(crate) struct Remote {
+  pub index: RemoteIndex,
+  pub network: Network,
+  /// The position of the mirror that served the index.
+  pub served_by: usize,
+}
+
+impl Remote {
+  /// The mirrors to download from: the one that served the index, then
+  /// the ones after it. Earlier mirrors already failed to serve the index.
+  pub fn download_mirrors(&self) -> &[Mirror] {
+    &self.network.mirrors[self.served_by..]
+  }
+}
+
 /// Loads the mirror's version index (revalidating the cached copy) and
 /// refreshes nvm's LTS aliases from it. Warnings go to `err`.
 ///
@@ -223,11 +293,10 @@ fn json_string_field(text: &str, key: &str) -> Option<String> {
 ///
 /// Exit code 1 when the mirror settings are invalid or the index cannot be
 /// loaded.
-pub(crate) fn remote_index(ctx: &Context, err: &mut dyn Write) -> Result<RemoteIndex, Failure> {
-  let failure = |e: &dyn fmt::Display| Failure::new(exit::ERROR, e.to_string());
-  let mirror = Mirror::from_env(|key| ctx.var(key)).map_err(|e| failure(&e))?;
-  let client = Client::for_mirror(&mirror);
-  let loaded = load_index(&client, &mirror, &ctx.nvm_dir.cache_dir()).map_err(|e| failure(&e))?;
+pub(crate) fn remote_index(ctx: &Context, err: &mut dyn Write) -> Result<Remote, Failure> {
+  let network = network(ctx, err)?;
+  let loaded = load_index(&network.client, &network.mirrors, &ctx.nvm_dir.cache_dir())
+    .map_err(|e| Failure::new(exit::ERROR, e.to_string()))?;
   for warning in &loaded.warnings {
     say(err, warning);
   }
@@ -237,7 +306,11 @@ pub(crate) fn remote_index(ctx: &Context, err: &mut dyn Write) -> Result<RemoteI
       format_args!("warning: cannot update the LTS aliases: {e}"),
     );
   }
-  Ok(loaded.index)
+  Ok(Remote {
+    index: loaded.index,
+    network,
+    served_by: loaded.mirror,
+  })
 }
 
 /// The calling shell, found in the process tree, for commands whose

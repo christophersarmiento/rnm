@@ -127,3 +127,111 @@ jobs:
         run: cargo test --locked --test shells
         env:
           RNM_REQUIRE_SHELLS: ${{ matrix.shells }}
+
+  # The oldest supported shells (docs/README.md, decision 7). macOS's own
+  # /bin/bash is 3.2; zsh and fish are built from source and cached.
+  shells-minimum:
+    name: Minimum shells (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            shells: bash
+          - os: ubuntu-latest
+            shells: zsh,fish,nu,pwsh
+    env:
+      MIN_ZSH: 5.0.8
+      MIN_FISH: 3.1.2
+      MIN_NU: 0.104.0
+      MIN_PWSH: 7.2.24
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99
+      - uses: Swatinem/rust-cache@v2
+      - name: Use macOS's bash 3.2
+        if: runner.os == 'macOS'
+        run: echo "RNM_SHELL_BASH=/bin/bash" >> "$GITHUB_ENV"
+      # Builds link against the image's ncurses and PCRE2, so the cache keys
+      # include the image (for example ubuntu24).
+      - name: Runner image
+        id: image
+        if: runner.os == 'Linux'
+        run: echo "os=$ImageOS" >> "$GITHUB_OUTPUT"
+      - name: Install build and runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake libncurses-dev libpcre2-dev
+      - name: Cache zsh
+        id: cache-zsh
+        if: runner.os == 'Linux'
+        uses: actions/cache@v6
+        with:
+          path: ~/old-shells/zsh
+          key: zsh-${{ env.MIN_ZSH }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.os }}
+      - name: Build zsh
+        if: runner.os == 'Linux' && steps.cache-zsh.outputs.cache-hit != 'true'
+        run: |
+          src="$RUNNER_TEMP/zsh-src"
+          mkdir -p "$src"
+          curl -fsSL "https://www.zsh.org/pub/old/zsh-$MIN_ZSH.tar.gz" | tar xz -C "$src" --strip-components=1
+          cd "$src"
+          # --without-tcsetpgrp: configure's check needs a terminal. zsh 5.0
+          # predates compilers that reject K&R C and duplicate definitions.
+          ./configure --prefix="$HOME/old-shells/zsh" --without-tcsetpgrp --disable-gdbm \
+            CFLAGS="-O2 -std=gnu89 -fcommon"
+          make -j"$(nproc)"
+          make install.bin install.modules install.fns
+      - name: Cache fish
+        id: cache-fish
+        if: runner.os == 'Linux'
+        uses: actions/cache@v6
+        with:
+          path: ~/old-shells/fish
+          key: fish-${{ env.MIN_FISH }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.os }}
+      # fish finds the system's PCRE2 (libpcre2-dev); its bundled copy needs
+      # CMake < 4.
+      - name: Build fish
+        if: runner.os == 'Linux' && steps.cache-fish.outputs.cache-hit != 'true'
+        run: |
+          src="$RUNNER_TEMP/fish-src"
+          mkdir -p "$src"
+          curl -fsSL "https://github.com/fish-shell/fish-shell/releases/download/$MIN_FISH/fish-$MIN_FISH.tar.gz" \
+            | tar xz -C "$src" --strip-components=1
+          cmake -S "$src" -B "$src/build" -DCMAKE_INSTALL_PREFIX="$HOME/old-shells/fish" \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_DOCS=OFF -DWITH_GETTEXT=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build "$src/build" -j"$(nproc)"
+          cmake --install "$src/build"
+      - name: Install PowerShell 7.2 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          dir="$RUNNER_TEMP/pwsh"
+          mkdir -p "$dir"
+          curl -fsSL "https://github.com/PowerShell/PowerShell/releases/download/v$MIN_PWSH/powershell-$MIN_PWSH-linux-x64.tar.gz" \
+            | tar xz -C "$dir"
+          chmod +x "$dir/pwsh"
+          echo "RNM_SHELL_PWSH=$dir/pwsh" >> "$GITHUB_ENV"
+      - uses: hustcer/setup-nu@v3
+        if: runner.os == 'Linux'
+        with:
+          version: ${{ env.MIN_NU }}
+      - name: Select the old shells (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          {
+            echo "RNM_SHELL_ZSH=$HOME/old-shells/zsh/bin/zsh"
+            echo "RNM_SHELL_FISH=$HOME/old-shells/fish/bin/fish"
+            echo "RNM_SHELL_NU=$(command -v nu)"
+          } >> "$GITHUB_ENV"
+      - name: Shell versions
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            "$RNM_SHELL_BASH" --version | head -1
+          else
+            "$RNM_SHELL_ZSH" --version; "$RNM_SHELL_FISH" --version; "$RNM_SHELL_NU" --version
+            "$RNM_SHELL_PWSH" -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          fi
+      - name: End-to-end shell tests
+        run: cargo test --locked --test shells
+        env:
+          RNM_REQUIRE_SHELLS: ${{ matrix.shells }}

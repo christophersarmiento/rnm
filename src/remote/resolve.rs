@@ -59,6 +59,7 @@ impl RemoteIndex {
     };
     match spec {
       | VersionSpec::Version(req) => newest(&|r| req.matches(&r.version)),
+      | VersionSpec::Range(range) => newest(&|r| range.matches(&r.version)),
       | VersionSpec::Node | VersionSpec::Stable => newest(&|r| r.version.is_stable()),
       | VersionSpec::Unstable => newest(&|r| r.version.is_unstable()),
       | VersionSpec::Lts(LtsSpec::Latest) => newest(&|r| r.lts.is_some()),

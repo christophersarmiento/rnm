@@ -34,6 +34,9 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 pub struct Loaded {
   pub index: RemoteIndex,
   pub warnings: Vec<IndexWarning>,
+  /// The position, in the mirror list, of the mirror that served the
+  /// index.
+  pub mirror: usize,
 }
 
 /// A problem that did not stop the index from loading.
@@ -43,6 +46,8 @@ pub enum IndexWarning {
   UsedCachedCopy(HttpError),
   /// The fresh index could not be saved for next time.
   CacheNotSaved { path: PathBuf, source: io::Error },
+  /// A mirror failed, so the next one in the list was tried.
+  TriedNextMirror(String),
 }
 
 impl fmt::Display for IndexWarning {
@@ -51,6 +56,7 @@ impl fmt::Display for IndexWarning {
       | Self::UsedCachedCopy(error) => {
         write!(f, "warning: {error}; using the cached version list")
       },
+      | Self::TriedNextMirror(error) => write!(f, "warning: {error}; trying the next mirror"),
       | Self::CacheNotSaved { path, source } => {
         write!(
           f,
@@ -100,6 +106,23 @@ impl fmt::Display for IndexError {
 }
 
 impl std::error::Error for IndexError {}
+
+impl IndexError {
+  /// Another mirror might do better: this one is unreachable, overloaded,
+  /// or lacks a usable index. Credential errors are not in this group.
+  #[must_use]
+  pub fn allows_fallback(&self) -> bool {
+    match self {
+      | Self::Http(error) => error.allows_fallback(),
+      | Self::Read { .. } | Self::TooLarge { .. } | Self::Parse { .. } => true,
+      | Self::Url(_) => false,
+    }
+  }
+
+  fn is_unreachable(&self) -> bool {
+    matches!(self, Self::Http(HttpError::Transport { .. }))
+  }
+}
 
 /// The cached copy of one mirror's index.
 struct CachedIndex {
@@ -151,21 +174,68 @@ impl CachedIndex {
   }
 }
 
-/// Loads the mirror's index, revalidating the cached copy in `cache_dir`
-/// (normally `<root>/.cache`).
+/// Loads the index from the first mirror that serves one, revalidating
+/// the cached copy in `cache_dir` (normally `<root>/.cache`).
 ///
-/// If the mirror cannot be reached at all (network, DNS, TLS, or proxy
-/// failure), the cached copy is used with a warning. HTTP errors such as 401
-/// are never hidden this way.
+/// A mirror that cannot be reached, answers 404, 429, or 5xx, or serves
+/// something that is not an index is skipped with a warning, and the next
+/// one is tried. Credential problems (401, 403) stop the search: they need
+/// fixing, not hiding. If no mirror could be reached at all (network, DNS,
+/// TLS, or proxy failures only), the cached copy of the first mirror that
+/// has one is used, with a warning.
 ///
 /// # Errors
 ///
-/// See [`IndexError`].
+/// See [`IndexError`]. With several mirrors, the first mirror's error.
 pub fn load_index(
   client: &Client,
-  mirror: &Mirror,
+  mirrors: &[Mirror],
   cache_dir: &Path,
 ) -> Result<Loaded, IndexError> {
+  let mut skipped: Vec<IndexWarning> = Vec::new();
+  let mut first_error: Option<IndexError> = None;
+  let mut only_unreachable = true;
+  for (position, mirror) in mirrors.iter().enumerate() {
+    let is_last = position + 1 == mirrors.len();
+    match load_fresh(client, mirror, cache_dir) {
+      | Ok(mut loaded) => {
+        loaded.mirror = position;
+        skipped.append(&mut loaded.warnings);
+        loaded.warnings = skipped;
+        return Ok(loaded);
+      },
+      | Err(error) if error.allows_fallback() => {
+        only_unreachable &= error.is_unreachable();
+        if !is_last {
+          skipped.push(IndexWarning::TriedNextMirror(error.to_string()));
+        }
+        first_error.get_or_insert(error);
+      },
+      | Err(error) => return Err(error),
+    }
+  }
+  let error = first_error.unwrap_or_else(|| IndexError::Url("no mirror is configured".into()));
+  let cached = mirrors.iter().enumerate().find_map(|(position, mirror)| {
+    let (index, _) = CachedIndex::for_mirror(cache_dir, &mirror.url).read()?;
+    Some((position, index))
+  });
+  match (cached, error) {
+    | (Some((position, index)), IndexError::Http(http)) if only_unreachable => {
+      skipped.retain(|warning| !matches!(warning, IndexWarning::TriedNextMirror(_)));
+      skipped.push(IndexWarning::UsedCachedCopy(http));
+      Ok(Loaded {
+        index,
+        warnings: skipped,
+        mirror: position,
+      })
+    },
+    | (_, error) => Err(error),
+  }
+}
+
+/// Loads one mirror's index from the network (a 304 reuses the cached
+/// copy).
+fn load_fresh(client: &Client, mirror: &Mirror, cache_dir: &Path) -> Result<Loaded, IndexError> {
   let url = mirror
     .url
     .child(INDEX_FILE)
@@ -180,12 +250,7 @@ pub fn load_index(
       return Ok(Loaded {
         index,
         warnings: Vec::new(),
-      });
-    },
-    | (Err(error @ HttpError::Transport { .. }), Some((index, _))) => {
-      return Ok(Loaded {
-        index,
-        warnings: vec![IndexWarning::UsedCachedCopy(error)],
+        mirror: 0,
       });
     },
     | (Ok(Conditional::NotModified), None) => {
@@ -208,7 +273,11 @@ pub fn load_index(
     .err()
     .into_iter()
     .collect();
-  Ok(Loaded { index, warnings })
+  Ok(Loaded {
+    index,
+    warnings,
+    mirror: 0,
+  })
 }
 
 fn read_limited(body: Box<dyn Read + Send>, url: &str) -> Result<String, IndexError> {

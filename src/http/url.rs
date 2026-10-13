@@ -144,6 +144,48 @@ impl Url {
   }
 }
 
+/// A user name and password taken from a URL (`https://user:pass@host/`),
+/// percent-decoded.
+#[derive(Clone, PartialEq, Eq)]
+pub struct UserInfo {
+  pub user: String,
+  pub password: String,
+}
+
+impl fmt::Debug for UserInfo {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("UserInfo")
+      .field("user", &self.user)
+      .finish_non_exhaustive()
+  }
+}
+
+impl Url {
+  /// This URL without its `user:password@` part, and that part decoded.
+  /// rnm sends it as an HTTP Basic credential scoped to the URL, never in
+  /// the URL itself, so it cannot follow a redirect or show up in a log.
+  #[must_use]
+  pub fn split_userinfo(&self) -> (Self, Option<UserInfo>) {
+    let text = self.uri.to_string();
+    let stripped = redact_userinfo(&text);
+    let userinfo = self.uri.authority().and_then(|authority| {
+      let (userinfo, _) = authority.as_str().rsplit_once('@')?;
+      let (user, password) = userinfo.split_once(':').unwrap_or((userinfo, ""));
+      let decode = |part: &str| {
+        percent_encoding::percent_decode_str(part)
+          .decode_utf8_lossy()
+          .into_owned()
+      };
+      Some(UserInfo {
+        user: decode(user),
+        password: decode(password),
+      })
+    });
+    let url = Self::parse(&stripped).unwrap_or_else(|_| self.clone());
+    (url, userinfo)
+  }
+}
+
 /// Displays the URL without any `user:password@` part.
 impl fmt::Display for Url {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -251,6 +293,21 @@ mod tests {
       assert!(url(host).is_loopback(), "{host}");
     }
     assert!(!url("http://mirror.corp/").is_loopback());
+  }
+
+  #[test]
+  fn splits_userinfo() {
+    let (bare, info) = url("https://me%40corp:p%3Ass@h.example/dist").split_userinfo();
+    assert_eq!(bare.uri().to_string(), "https://h.example/dist");
+    let info = info.unwrap();
+    assert_eq!(
+      (info.user.as_str(), info.password.as_str()),
+      ("me@corp", "p:ss")
+    );
+    assert!(!format!("{info:?}").contains("p:ss"));
+    let (same, none) = url("https://h.example/dist").split_userinfo();
+    assert_eq!(same, url("https://h.example/dist"));
+    assert!(none.is_none());
   }
 
   #[test]

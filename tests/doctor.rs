@@ -136,7 +136,7 @@ fn healthy_setup_passes() {
     );
   }
   assert!(
-    stdout.contains("credential from RNM_AUTH_HEADER, 1 releases"),
+    stdout.contains("credentials from RNM_AUTH_HEADER, 1 releases"),
     "{stdout}"
   );
 }
