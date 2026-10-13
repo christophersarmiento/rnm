@@ -118,6 +118,12 @@ function Install-Binary {
     }
     Copy-Item -LiteralPath (Join-Path $temp 'unpacked\rnm.exe') -Destination $exe
     Remove-Item -LiteralPath "$exe.old" -Force -ErrorAction SilentlyContinue
+    # Tells `rnm self-update` that this copy may update itself, and from which
+    # channel.
+    $channel = 'stable'
+    if ($Nightly -or $Version -eq 'nightly') { $channel = 'nightly' }
+    $marker = '{"source":"install.ps1","channel":"' + $channel + '"}'
+    [IO.File]::WriteAllText((Join-Path $InstallDir 'install.json'), $marker, (New-Object Text.UTF8Encoding $false))
     Write-Host "Installed $(& $exe --version) to $exe"
   } finally {
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
@@ -194,3 +200,5 @@ Write-Host ''
 Write-Host 'Open a new terminal, then run:'
 Write-Host '  rnm install --lts'
 Write-Host '  rnm doctor'
+Write-Host ''
+Write-Host 'Update rnm later with: rnm self-update'

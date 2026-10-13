@@ -182,6 +182,11 @@ install_binary() {
   cp "$tmp/rnm" "$install_dir/rnm.new"
   chmod 755 "$install_dir/rnm.new"
   mv -f "$install_dir/rnm.new" "$install_dir/rnm"
+  # Tells `rnm self-update` that this copy may update itself, and from
+  # which channel.
+  local channel=stable
+  if [ "$version" = nightly ]; then channel=nightly; fi
+  printf '{"source":"install.sh","channel":"%s"}\n' "$channel" >"$install_dir/install.json"
   say "Installed $("$install_dir/rnm" --version) to $install_dir/rnm"
 }
 
@@ -259,3 +264,5 @@ say ""
 say "Open a new terminal (or reload your shell startup file), then run:"
 say "  rnm install --lts"
 say "  rnm doctor"
+say ""
+say "Update rnm later with: rnm self-update"
