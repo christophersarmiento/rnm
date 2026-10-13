@@ -71,6 +71,7 @@ pub fn doctor(ctx: &Context, out: &mut dyn Write) -> Result<(), Failure> {
     npm_prefix(ctx),
     other_managers(ctx),
     mirror(ctx),
+    rnm_updates(ctx),
   ];
   #[cfg(windows)]
   findings.push(execution_policy());
@@ -115,7 +116,7 @@ fn platform() -> Finding {
           "{}-{}{libc}, rnm {}",
           platform.os.dist_name(),
           platform.arch,
-          env!("CARGO_PKG_VERSION")
+          crate::VERSION
         ),
       )
     },
@@ -339,6 +340,14 @@ fn other_managers(ctx: &Context) -> Finding {
       found.join(", ")
     ),
   )
+}
+
+/// Whether a newer rnm is published on this installation's channel. Not
+/// being able to check is not a problem.
+fn rnm_updates(ctx: &Context) -> Finding {
+  let (current, message) = super::self_update::update_finding(ctx);
+  let status = if current { Status::Ok } else { Status::Warn };
+  Finding::new(status, "rnm updates", message)
 }
 
 /// The mirror settings are valid and the index downloads with them.

@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use ring::digest;
 
-pub use archive::ArchiveKind;
+pub use archive::{ArchiveKind, unpack};
 pub use checksums::{Sha256, find_checksum};
 pub use lock::{InstallLock, LockError, LockSettings};
 
@@ -654,6 +654,15 @@ fn single_top_dir(staging: &Path, archive: &Path) -> Result<PathBuf, InstallErro
 
 /// Hashes everything `reader` yields, copying it to `copy` when given and
 /// reporting the running byte count.
+/// The SHA-256 of everything `reader` yields.
+///
+/// # Errors
+///
+/// Read errors.
+pub fn sha256_of(reader: impl Read) -> io::Result<Sha256> {
+  hash(reader, None, &mut |_| {})
+}
+
 fn hash(
   mut reader: impl Read,
   mut copy: Option<&mut File>,

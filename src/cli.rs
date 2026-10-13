@@ -12,15 +12,8 @@ use rnm::commands::{
 use rnm::shell::{CdHook, ShellKind};
 use rnm::version::LATEST_LTS;
 
-/// What `--version` prints: `RNM_BUILD_VERSION` when the build sets it (for
-/// example `0.1.0-nightly.20261013+ec57833`), otherwise Cargo's version.
-const VERSION: &str = match option_env!("RNM_BUILD_VERSION") {
-  | Some(version) if !version.is_empty() => version,
-  | _ => env!("CARGO_PKG_VERSION"),
-};
-
 #[derive(Debug, Parser)]
-#[command(name = "rnm", version = VERSION, about, propagate_version = true)]
+#[command(name = "rnm", version = rnm::VERSION, about, propagate_version = true)]
 pub struct Cli {
   #[command(subcommand)]
   pub command: Option<Command>,
@@ -155,6 +148,27 @@ pub enum Command {
 
   /// Upgrade the active version's npm to the newest one that works with it.
   InstallLatestNpm,
+
+  /// Update rnm itself to the newest release.
+  ///
+  /// Follows the channel rnm was installed from (stable by default).
+  /// Only a copy installed by rnm's install script updates itself; for
+  /// others, rnm prints the command that updates them.
+  #[command(disable_version_flag = true)]
+  SelfUpdate {
+    /// Only report whether an update is available.
+    #[arg(long)]
+    check: bool,
+    /// Switch to, and stay on, tagged releases.
+    #[arg(long, conflicts_with_all = ["nightly", "version"])]
+    stable: bool,
+    /// Switch to, and stay on, the nightly builds of the dev branch.
+    #[arg(long, conflicts_with = "version")]
+    nightly: bool,
+    /// Install exactly this release, for example v0.2.0 (also older ones).
+    #[arg(long, value_name = "TAG")]
+    version: Option<String>,
+  },
 
   /// List the versions available on the mirror.
   ///
