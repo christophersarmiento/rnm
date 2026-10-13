@@ -33,6 +33,90 @@ pub fn replace_symlink(target: &Path, link: &Path) -> io::Result<()> {
   rename_or_clean_up(&tmp, link)
 }
 
+/// Creates `link` as a link to the directory `target`: a symlink on unix, a
+/// directory junction on Windows (which needs no admin rights or Developer
+/// Mode).
+///
+/// # Errors
+///
+/// Returns an error if `link` exists or cannot be created.
+pub fn link_dir(target: &Path, link: &Path) -> io::Result<()> {
+  #[cfg(unix)]
+  {
+    std::os::unix::fs::symlink(target, link)
+  }
+  #[cfg(windows)]
+  {
+    junction::create(target, link)
+  }
+}
+
+/// The directory a [`link_dir`] link points to.
+///
+/// # Errors
+///
+/// Returns an error if `link` is not such a link.
+pub fn read_dir_link(link: &Path) -> io::Result<PathBuf> {
+  #[cfg(unix)]
+  {
+    std::fs::read_link(link)
+  }
+  #[cfg(windows)]
+  {
+    junction::get_target(link)
+  }
+}
+
+/// Removes a [`link_dir`] link, never the target's contents.
+///
+/// # Errors
+///
+/// Returns an error if `link` cannot be removed.
+pub fn remove_dir_link(link: &Path) -> io::Result<()> {
+  #[cfg(unix)]
+  {
+    std::fs::remove_file(link)
+  }
+  #[cfg(windows)]
+  {
+    std::fs::remove_dir(link)
+  }
+}
+
+/// `path` is a link (symlink or junction) rather than a real directory.
+#[must_use]
+pub fn is_link(path: &Path) -> bool {
+  std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+}
+
+/// Copies the directory tree `from` to `to`, which must not exist. Symlinks
+/// inside are recreated as symlinks on unix (npm's `bin` links) and copied as
+/// files elsewhere.
+///
+/// # Errors
+///
+/// Returns the first error; `to` may then be partly written.
+pub fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
+  std::fs::create_dir(to)?;
+  for entry in std::fs::read_dir(from)? {
+    let entry = entry?;
+    let source = entry.path();
+    let destination = to.join(entry.file_name());
+    let file_type = entry.file_type()?;
+    #[cfg(unix)]
+    if file_type.is_symlink() {
+      std::os::unix::fs::symlink(std::fs::read_link(&source)?, &destination)?;
+      continue;
+    }
+    if file_type.is_dir() {
+      copy_dir(&source, &destination)?;
+    } else {
+      std::fs::copy(&source, &destination)?;
+    }
+  }
+  Ok(())
+}
+
 /// Other users can read the file at `path` (unix permission bits). Always
 /// `false` on Windows, where files in the profile are private by default.
 #[must_use]
@@ -78,6 +162,37 @@ mod tests {
     write_atomic(&path, "two").unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
     assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+  }
+
+  #[test]
+  fn links_and_copies_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    std::fs::create_dir_all(source.join("bin")).unwrap();
+    std::fs::write(source.join("bin").join("node"), "x").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("node", source.join("bin").join("alias")).unwrap();
+
+    let link = tmp.path().join("link");
+    link_dir(&source, &link).unwrap();
+    assert!(is_link(&link));
+    assert_eq!(read_dir_link(&link).unwrap(), source);
+    assert!(link.join("bin").join("node").is_file());
+    remove_dir_link(&link).unwrap();
+    assert!(source.join("bin").join("node").is_file());
+
+    let copy = tmp.path().join("copy");
+    copy_dir(&source, &copy).unwrap();
+    assert!(!is_link(&copy));
+    assert_eq!(
+      std::fs::read_to_string(copy.join("bin").join("node")).unwrap(),
+      "x"
+    );
+    #[cfg(unix)]
+    assert_eq!(
+      std::fs::read_link(copy.join("bin").join("alias")).unwrap(),
+      Path::new("node")
+    );
   }
 
   #[cfg(unix)]

@@ -225,14 +225,8 @@ fn is_not_a_link(e: &io::Error) -> bool {
   )
 }
 
-#[cfg(unix)]
 fn read_link(link: &Path) -> io::Result<PathBuf> {
-  std::fs::read_link(link)
-}
-
-#[cfg(windows)]
-fn read_link(link: &Path) -> io::Result<PathBuf> {
-  junction::get_target(link)
+  crate::fs::read_dir_link(link)
 }
 
 #[cfg(unix)]
@@ -249,19 +243,11 @@ fn replace_link(target: &Path, link: &Path) -> io::Result<()> {
     | Err(e) if e.kind() == io::ErrorKind::NotFound => {},
     | Err(e) => return Err(e),
   }
-  junction::create(target, link)
+  crate::fs::link_dir(target, link)
 }
 
-#[cfg(unix)]
 fn remove_link(link: &Path) -> io::Result<()> {
-  std::fs::remove_file(link)
-}
-
-/// Removing a junction with `remove_dir` deletes only the junction, never the
-/// target's contents.
-#[cfg(windows)]
-fn remove_link(link: &Path) -> io::Result<()> {
-  std::fs::remove_dir(link)
+  crate::fs::remove_dir_link(link)
 }
 
 #[cfg(test)]
