@@ -120,6 +120,7 @@ Measured with hyperfine on Linux (GitHub Actions, x64) and an Apple M3; lower is
 - [Commands](docs/commands.md): every command, flag, and exit code
 - [Version files and specs](docs/version-files.md): `.nvmrc`, `.node-version`, `package.json`, the version grammar
 - [Configuration](docs/configuration.md): `config.toml`, environment variables, mirrors, credentials, proxies
+- [Global tools](docs/global-tools.md): global npm packages, and running a tool on a fixed version
 - [Windows](docs/windows.md): layout, PowerShell, Git Bash, importing from nvm-windows, `default --persist`
 - [Migrating from nvm, fnm, and nvm-windows](docs/migrating.md)
 - [Troubleshooting](docs/troubleshooting.md)
