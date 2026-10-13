@@ -462,6 +462,61 @@ fn use_on_cd_in_powershell_constrained_language_mode() {
   }
 }
 
+/// Loads `rnm completions` in each shell and completes `rnm ls-r`. zsh's
+/// completion system needs a terminal, so there the test only checks that
+/// `_rnm` is registered for `rnm`.
+#[test]
+fn completions_load_in_each_shell() {
+  for shell in available() {
+    let fixture = Fixture::new();
+    let (script, expected) = match shell.kind {
+      | ShellKind::Bash => (
+        "eval \"$(rnm completions --shell bash)\" || exit 1\n\
+         COMP_WORDS=(rnm ls-r); COMP_CWORD=1; COMP_LINE='rnm ls-r'; COMP_POINT=8\n\
+         _rnm rnm ls-r rnm\nprintf '%s\\n' \"${COMPREPLY[@]}\"\n"
+          .to_owned(),
+        "ls-remote\n",
+      ),
+      | ShellKind::Zsh => (
+        "autoload -Uz compinit && compinit -u -D\n\
+         eval \"$(rnm completions --shell zsh)\" || exit 1\nprint -r -- $_comps[rnm]\n"
+          .to_owned(),
+        "_rnm\n",
+      ),
+      | ShellKind::Fish => (
+        "rnm completions --shell fish | source; or exit 1\n\
+         complete -C 'rnm ls-r' | string split -f1 \\t\n"
+          .to_owned(),
+        "ls-remote\n",
+      ),
+      | ShellKind::Nu => {
+        let file = fixture.root.join("completions.nu");
+        let generated = Command::new(RNM)
+          .args(["completions", "--shell", "nu"])
+          .output()
+          .unwrap();
+        std::fs::write(&file, generated.stdout).unwrap();
+        (
+          format!(
+            "source r#'{}'#\nprint (scope commands | where name == 'rnm ls-remote' | length)\n",
+            file.display()
+          ),
+          "1\n",
+        )
+      },
+      | ShellKind::PowerShell => (
+        "rnm completions --shell powershell | Out-String | Invoke-Expression\n\
+         (TabExpansion2 -inputScript 'rnm ls-r' -cursorColumn 8).CompletionMatches | \
+         ForEach-Object CompletionText\n"
+          .to_owned(),
+        "ls-remote\n",
+      ),
+    };
+    let output = fixture.run(shell, &script);
+    assert_eq!(output, expected, "unexpected output from {}", shell.name);
+  }
+}
+
 /// Values that break naive quoting.
 const TRICKY: &[&str] = &[
   "plain",

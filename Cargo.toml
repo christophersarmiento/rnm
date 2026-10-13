@@ -11,7 +11,9 @@ keywords = ["node", "nodejs", "nvm", "version-manager"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-clap = { version = "4.6.7", default-features = false, features = ["std", "help", "usage", "error-context", "suggestions", "derive"] }
+clap = { version = "4.6.7", default-features = false, features = ["std", "help", "usage", "error-context", "suggestions", "derive", "string"] }
+clap_complete = "4.6.11"
+clap_complete_nushell = "4.6.2"
 flate2 = "1.1.10"
 lzma-rust2 = { version = "0.22.0", default-features = false, features = ["std", "optimization", "xz"] }
 ring = "0.17.14"

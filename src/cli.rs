@@ -96,6 +96,23 @@ pub enum Command {
   /// or .node-version.
   Exec(ExecArgs),
 
+  /// Print a shell completion script for rnm.
+  ///
+  /// Load it from your shell's startup file:
+  ///   bash        eval "$(rnm completions --shell bash)"
+  ///   zsh         eval "$(rnm completions --shell zsh)"   (after compinit)
+  ///   fish        rnm completions --shell fish | source
+  ///   PowerShell  rnm completions --shell powershell | Out-String | Invoke-Expression
+  /// Nushell cannot load generated code at startup; save it once instead:
+  ///   rnm completions --shell nu | save -f ($nu.data-dir | path join vendor/autoload/rnm-completions.nu)
+  #[command(verbatim_doc_comment)]
+  Completions {
+    /// The shell to generate completions for. Detected from the parent
+    /// process when omitted.
+    #[arg(long, value_enum)]
+    shell: Option<ShellKind>,
+  },
+
   /// List the versions available on the mirror.
   ///
   /// Also refreshes the LTS aliases (lts/*, lts/<name>) that `use` reads.
