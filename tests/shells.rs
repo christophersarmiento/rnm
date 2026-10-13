@@ -438,6 +438,30 @@ fn use_on_cd_edge_cases_in_bash() {
   assert_eq!(output, "v22.20.0\nv22.20.0\n4\n");
 }
 
+/// Constrained Language Mode, which application-control policies enforce,
+/// forbids the delegate behind `LocationChangedAction`, so the hook falls
+/// back to wrapping `prompt`.
+#[test]
+fn use_on_cd_in_powershell_constrained_language_mode() {
+  for shell in available()
+    .into_iter()
+    .filter(|s| s.kind == ShellKind::PowerShell)
+  {
+    let fixture = Fixture::new();
+    let script = "$ErrorActionPreference = 'Stop'\n\
+                  $ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\n\
+                  Set-Location project\n\
+                  rnm env --shell powershell --use-on-cd | Out-String | Invoke-Expression\nnode\n\
+                  Set-Location ..\n$null = prompt\nnode\n";
+    let output = fixture.run(shell, script);
+    assert_eq!(
+      output, "v22.20.0\nNow using node v20.19.0\nv20.19.0\n",
+      "unexpected output from {}",
+      shell.name
+    );
+  }
+}
+
 /// Values that break naive quoting.
 const TRICKY: &[&str] = &[
   "plain",
