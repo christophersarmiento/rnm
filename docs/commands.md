@@ -5,7 +5,7 @@ rnm uses nvm's command and flag names, with fnm's names as aliases where they di
 - Versions: [`install`](#install) · [`uninstall`](#uninstall) · [`use`](#use) · [`current`](#current) · [`ls`](#ls) · [`ls-remote`](#ls-remote) · [`which`](#which) · [`exec`](#exec)
 - Aliases: [`alias`](#alias) · [`unalias`](#unalias) · [`default`](#default)
 - npm packages: [`reinstall-packages`](#reinstall-packages) · [`install-latest-npm`](#install-latest-npm)
-- Setup: [`env`](#env) · [`completions`](#completions) · [`doctor`](#doctor) · [`import nvm-windows`](#import-nvm-windows)
+- Setup: [`env`](#env) · [`completions`](#completions) · [`doctor`](#doctor) · [`import nvm-windows`](#import-nvm-windows) · [`self-update`](#self-update)
 - [Exit codes](#exit-codes)
 
 Wherever a command takes a `VERSION`, you can write anything from the [version grammar](version-files.md#version-specs): `20`, `v20.11`, `20.11.1`, `lts/*`, `lts/iron`, `lts/-1`, `node`, `system`, an alias, or an npm range such as `^20.1`.
@@ -204,6 +204,7 @@ Checks the setup and says what to fix:
 - npm's `prefix` setting (`.npmrc`, `NPM_CONFIG_PREFIX`), which breaks per-version global packages
 - nvm, fnm, Volta, or nvm-windows active in the same shell
 - the mirror: the settings, every credential source (never the values), fallback mirrors, and one request for the version list
+- whether a newer rnm is published on your channel (not being able to check is not a problem)
 - on Windows: the PowerShell execution policy
 
 It exits with 1 when a check fails. Warnings alone exit with 0.
@@ -215,6 +216,23 @@ rnm import nvm-windows [--link | --move | --copy] [--from DIR]
 ```
 
 Adopts the versions nvm-windows installed, its aliases, and its active version (as `default`, if you have none). See [Windows](windows.md#import-from-nvm-windows).
+
+## self-update
+
+```sh
+rnm self-update [--check] [--stable | --nightly | --version TAG]
+```
+
+Updates rnm itself, if it was installed by an [install script](installation.md#upgrade).
+
+| Option | Effect |
+|---|---|
+| `--check` | Only report whether an update exists, and how to install it. |
+| `--stable` | Switch to (and stay on) tagged releases. |
+| `--nightly` | Switch to (and stay on) the nightly builds of the `dev` branch. |
+| `--version TAG` | Install exactly this release, for example `v0.1.0`; older releases work too. |
+
+Without options, it installs the newest release on the channel you installed from. The download is checked against the release's `SHA256SUMS` and run once before it replaces the old binary, so a broken download changes nothing. A copy installed with cargo or a package manager is left alone; rnm prints the command that updates it.
 
 ## Exit codes
 

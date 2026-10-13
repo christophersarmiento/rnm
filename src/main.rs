@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser};
 use clap_complete::{Shell, generate};
 use clap_complete_nushell::Nushell;
-use rnm::commands::{self, Context, Failure, Persistence};
+use rnm::commands::{self, Channel, Context, Failure, Persistence, SelfUpdateOptions};
 use rnm::shell::ShellKind;
 
 use crate::cli::{Cli, Command, ImportSource};
@@ -90,6 +90,26 @@ fn run(command: Command) -> Result<(), Failure> {
       commands::reinstall_packages_command(&ctx, &spec, &mut out)
     },
     | Command::InstallLatestNpm => commands::install_latest_npm_command(&ctx, &mut out),
+    | Command::SelfUpdate {
+      check,
+      stable,
+      nightly,
+      version,
+    } => {
+      let channel = if nightly {
+        Some(Channel::Nightly)
+      } else if stable {
+        Some(Channel::Stable)
+      } else {
+        None
+      };
+      let opts = SelfUpdateOptions {
+        channel,
+        version,
+        check,
+      };
+      commands::self_update(&ctx, &opts, &mut out, &mut err)
+    },
     | Command::LsRemote(args) => commands::ls_remote(&ctx, &args.into(), &mut out, &mut err),
     | Command::Completions { .. } => unreachable!("handled before the context is built"),
   }
@@ -134,7 +154,8 @@ fn without_hidden(command: &clap::Command) -> clap::Command {
         .map(without_hidden),
     )
     .visible_aliases(command.get_visible_aliases().map(str::to_owned))
-    .propagate_version(command.is_propagate_version_set());
+    .propagate_version(command.is_propagate_version_set())
+    .disable_version_flag(command.is_disable_version_flag_set());
   if let Some(about) = command.get_about() {
     copy = copy.about(about.clone());
   }
@@ -142,4 +163,17 @@ fn without_hidden(command: &clap::Command) -> clap::Command {
     copy = copy.version(version.to_owned());
   }
   copy
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// The copy the completion generators see must be as valid as the real
+  /// definition (for example `self-update --version` needs the copied
+  /// `disable_version_flag`).
+  #[test]
+  fn completion_definition_is_valid() {
+    without_hidden(&Cli::command()).debug_assert();
+  }
 }

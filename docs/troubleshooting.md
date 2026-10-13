@@ -34,7 +34,7 @@ Something later in your startup file puts another `node` first on `PATH`: nvm, f
 
 ## Global packages disappear after `rnm use`
 
-That is by design: each version has its own global packages, as in nvm. Copy them with `rnm install 22 --reinstall-packages-from=20` or `rnm reinstall-packages 20`, and list packages for every new version in [`default-packages`](configuration.md#default-packages).
+That is by design: each version has its own global packages, as in nvm. Copy them with `rnm install 22 --reinstall-packages-from=20` or `rnm reinstall-packages 20`, and list packages for every new version in [`default-packages`](configuration.md#default-packages). See [Global tools](global-tools.md).
 
 If global packages land outside the version folder, npm's `prefix` is set (in `~/.npmrc` or `NPM_CONFIG_PREFIX`); `rnm doctor` warns about it. Remove the setting.
 

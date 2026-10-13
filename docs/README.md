@@ -7,6 +7,7 @@
 | [Commands](commands.md) | Every command and flag, and the exit codes |
 | [Version files and specs](version-files.md) | `.nvmrc`, `.node-version`, `package.json`, the version grammar, npm ranges |
 | [Configuration](configuration.md) | `config.toml`, environment variables, mirrors, credentials, certificates, proxies, `default-packages` |
+| [Global tools](global-tools.md) | npm `-g` packages per version, tools installed elsewhere, and running a tool on a fixed version |
 | [Windows](windows.md) | Layout, PowerShell and Git Bash, Windows on Arm, importing from nvm-windows, `default --persist` |
 | [Migrating](migrating.md) | Moving from nvm, fnm, or nvm-windows, and the differences from nvm |
 | [Troubleshooting](troubleshooting.md) | Common problems and `rnm doctor` |

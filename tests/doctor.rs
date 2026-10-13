@@ -66,6 +66,10 @@ impl Setup {
       .env("USERPROFILE", &self.home)
       .env("RNM_NODE_MIRROR", mirror)
       .env("RNM_AUTH_HEADER", TOKEN)
+      .env(
+        "RNM_GITHUB_API_URL",
+        format!("http://127.0.0.1:{}", support::unused_port()),
+      )
       .current_dir(&self.root);
     command
   }

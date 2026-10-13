@@ -276,6 +276,7 @@ jobs:
             [ "$count" = 1 ] || { echo "::error::$file sets up rnm $count times"; cat "$file"; exit 1; }
           done
 
+          grep -q '"channel":"stable"' "$HOME/.local/share/rnm/bin/install.json"
           PATH=/usr/bin:/bin bash -c ". '$bash_profile'; rnm --version; test -n \"\$RNM_MULTISHELL_PATH\""
           PATH=/usr/bin:/bin zsh -c ". ~/.zshrc; rnm --version; test -n \"\$RNM_MULTISHELL_PATH\""
           fish -c 'source ~/.config/fish/conf.d/rnm.fish; rnm --version; test -n "$RNM_MULTISHELL_PATH"'
@@ -308,6 +309,8 @@ jobs:
           $bin = Join-Path $env:LOCALAPPDATA 'rnm\bin'
           $userPath = (Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
           if (@($userPath -split ';' | Where-Object { $_ -eq $bin }).Count -ne 1) { throw "user Path: $userPath" }
+          $marker = Get-Content -Raw -LiteralPath (Join-Path $bin 'install.json') | ConvertFrom-Json
+          if ($marker.channel -ne 'stable') { throw "install.json: $marker" }
           $documents = [Environment]::GetFolderPath('MyDocuments')
           foreach ($edition in 'WindowsPowerShell', 'PowerShell') {
             $profilePath = Join-Path $documents "$edition\profile.ps1"
