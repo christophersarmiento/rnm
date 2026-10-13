@@ -96,6 +96,14 @@ pub enum Command {
   /// or .node-version.
   Exec(ExecArgs),
 
+  /// Check the setup and explain what to fix.
+  ///
+  /// Checks the install directory, this shell's setup and PATH order, the
+  /// default alias, npm's prefix setting, other version managers, the
+  /// mirror and its credentials (one request), and on Windows the
+  /// PowerShell execution policy. Exits 1 when a check fails.
+  Doctor,
+
   /// Print a shell completion script for rnm.
   ///
   /// Load it from your shell's startup file:

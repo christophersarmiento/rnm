@@ -5,6 +5,7 @@
 mod alias;
 mod colors;
 mod current;
+mod doctor;
 mod env;
 mod exec;
 mod install;
@@ -22,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 pub use alias::{alias, unalias};
 pub use current::current;
+pub use doctor::doctor;
 pub use env::{EnvOptions, env};
 pub use exec::{ExecOptions, exec};
 pub use install::{InstallOptions, Progress, install};
