@@ -3,9 +3,8 @@
 `run.sh` times rnm, fnm and nvm end to end with
 [hyperfine](https://github.com/sharkdp/hyperfine) and writes a Markdown report,
 `results.md`, plus hyperfine's JSON and Markdown exports for every scenario.
-The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs it on
-Ubuntu and macOS (manually, or for pull requests that change these files) and
-shows `results.md` in the job summary.
+Run it by hand, for example before a release, and copy the numbers into
+[`docs/benchmarks.md`](../docs/benchmarks.md).
 
 ## Running locally
 
@@ -85,5 +84,5 @@ startup files.
     rewrites `PATH` in the shell instead of re-pointing a link.
 - The bash that runs the benchmarks is `bash` on `PATH` (`--bash` to change).
   On macOS this is usually 3.2 unless Homebrew's bash comes first.
-- Results from shared CI runners vary from run to run; compare tools within
-  one report, not across reports.
+- Results vary between machines and runs, especially on shared machines such
+  as CI runners; compare tools within one report, not across reports.

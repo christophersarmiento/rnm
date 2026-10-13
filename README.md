@@ -24,7 +24,7 @@ Now using node v20.19.5 (npm v10.8.2)
 ## Features
 
 - **nvm-compatible.** Same install tree, alias files, `.nvmrc` rules, version grammar (`lts/*`, `lts/iron`, `lts/-1`, `node`, `system`, aliases), command names, flags, output formats, and exit codes. `NVM_BIN` and `NVM_INC` are set for the tools that read them.
-- **Fast.** rnm adds about 4 ms to a shell's startup and `use` takes about 3.5 ms: as fast as fnm, and 25 to 100 times faster than nvm. See the [benchmarks](docs/benchmarks.md).
+- **Fast.** rnm adds about 1 ms (Linux) to 4 ms (macOS) to a shell's startup, and `use` costs about the same: as fast as fnm, and 25 to 360 times faster than nvm. See the [benchmarks](docs/benchmarks.md).
 - **Five shells, three operating systems.** bash (3.2+), zsh, fish, Nushell, and PowerShell (7 and Windows PowerShell 5.1) on macOS, Linux, and Windows, including Windows on Arm and Git Bash.
 - **Automatic switching** on `cd` from `.nvmrc`, `.node-version`, and (opt-in) `package.json` `devEngines` / `engines`, with npm ranges such as `^20.1` or `>=18 <21`.
 - **Verified downloads.** Every archive is checked against `SHASUMS256.txt` while it streams, then unpacked and renamed into place, so a version is never half-installed.
@@ -105,13 +105,13 @@ See [Migrating](docs/migrating.md).
 | Automatic switching on `cd` | README snippets | `--use-on-cd` | `--use-on-cd` (also `package.json`, opt-in) |
 | `default-packages`, `--reinstall-packages-from` | yes | no | yes |
 
-Measured with hyperfine on an Apple M3 (lower is better; details in [Benchmarks](docs/benchmarks.md)):
+Measured with hyperfine on Linux (GitHub Actions, x64) and an Apple M3; lower is better. Details in [Benchmarks](docs/benchmarks.md).
 
 | | rnm | fnm | nvm |
 |---|--:|--:|--:|
-| Shell startup | 3.6 ms | 3.9 ms | 130 ms |
-| `use` | 3.5 ms | 3.5 ms | 194 ms |
-| `cd` into a project with another `.nvmrc` | 3.5 ms | 3.6 ms | 359 ms |
+| Shell startup, Linux / macOS | 1.0 / 3.6 ms | 1.1 / 3.9 ms | 114 / 130 ms |
+| `use`, Linux / macOS | 0.8 / 3.5 ms | 1.0 / 3.5 ms | 168 / 194 ms |
+| `cd` into a project with another `.nvmrc`, Linux / macOS | 0.8 / 3.5 ms | 0.9 / 3.6 ms | 299 / 359 ms |
 
 ## Documentation
 

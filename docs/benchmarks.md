@@ -1,11 +1,19 @@
 # Benchmarks
 
-rnm, fnm, and nvm, timed end to end with [hyperfine](https://github.com/sharkdp/hyperfine). The harness is in [`benchmarks/`](../benchmarks/README.md); the [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs it on Linux and macOS and puts the report in the job summary.
+rnm, fnm, and nvm, timed end to end with [hyperfine](https://github.com/sharkdp/hyperfine). The harness is in [`benchmarks/`](../benchmarks/README.md); anyone can run it.
 
 ## Summary
 
 | | rnm | fnm | nvm |
 |---|--:|--:|--:|
+| **Linux** (GitHub Actions, Ubuntu 24.04, x64) | | | |
+| Shell startup (added to `bash`) | **1.0 ms** | 1.1 ms | 114 ms |
+| `use` (per call) | **0.8 ms** | 1.0 ms | 168 ms |
+| `cd` into a project with a different `.nvmrc` | **0.8 ms** | 0.9 ms | 299 ms (`cdnvm` recipe) |
+| `current` | **0.7 ms** | 0.8 ms | 7 ms |
+| `ls` | 1.0 ms | **0.8 ms** | 610 ms |
+| Install an exact version (local mirror) | **2.12 s** | 2.27 s | 2.47 s |
+| **macOS** (Apple M3, macOS 27) | | | |
 | Shell startup (added to `bash`) | **3.6 ms** | 3.9 ms | 130 ms |
 | `use` (per call) | **3.5 ms** | 3.5 ms | 194 ms |
 | `cd` into a project with a different `.nvmrc` | **3.5 ms** | 3.6 ms | 359 ms (`cdnvm` recipe) |
@@ -13,9 +21,9 @@ rnm, fnm, and nvm, timed end to end with [hyperfine](https://github.com/sharkdp/
 | `ls` | 4.2 ms | **3.6 ms** | 750 ms |
 | Install an exact version (local mirror) | 2.47 s | **2.28 s** | 3.55 s |
 
-macOS 27 on an Apple M3, bash 3.2, rnm 0.1.0, fnm 1.39.0, nvm 0.40.8, 13 October 2026. Lower is better.
+rnm 0.1.0, fnm 1.39.0, nvm 0.40.8, 13 October 2026. Lower is better. Linux: one run of the harness on a GitHub Actions runner, bash 5.2, 20 runs per command. macOS: bash 3.2, 10 runs per command. Process start-up is much cheaper on Linux, which is why every number there is smaller.
 
-In short: rnm starts a shell and switches versions as fast as fnm, and 25 to 100 times faster than nvm, while keeping nvm's files and behaviour. Installs are within 10 % of fnm, which skips checksum verification and the download cache.
+In short: rnm starts a shell and switches versions as fast as fnm, and 25 to 360 times faster than nvm, while keeping nvm's files and behaviour. Installs are on a par with fnm, although fnm skips checksum verification and the download cache.
 
 ## Method
 
@@ -32,7 +40,9 @@ In short: rnm starts a shell and switches versions as fast as fnm, and 25 to 100
 - **`cd` into a directory without a version file:** rnm (and `cdnvm`) switch back to the `default` version, as nvm's README recipes do, so rnm runs once per directory change (about 3.5 ms). fnm's hook does nothing there and stays on the previous version.
 - **`ls`:** nvm also resolves every alias; rnm lists aliases with their resolved versions too.
 
-## Full results
+## Full results (macOS)
+
+The Linux report has the same shape.
 
 ```text
 Shell startup                    Mean ± σ (ms)   Relative
