@@ -383,3 +383,39 @@ fn uninstall_removes_exact_aliases_only() {
   assert_success(&output);
   assert!(text(&output.stderr).contains("Version '20' is not installed."));
 }
+
+/// Windows cannot move a directory while a program holds one of its files
+/// open, as a running `node.exe` does. Uninstall then fails without deleting
+/// anything, and works once the file is closed.
+#[cfg(windows)]
+#[test]
+fn uninstall_reports_a_version_in_use() {
+  use std::os::windows::fs::OpenOptionsExt;
+  /// Others may read the file, but not delete or rename it.
+  const FILE_SHARE_READ: u32 = 1;
+
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, _) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  assert_success(&tree.rnm(&["install", VERSION]));
+  let node = tree.version_dir().join("node.exe");
+  let running = std::fs::OpenOptions::new()
+    .read(true)
+    .share_mode(FILE_SHARE_READ)
+    .open(&node)
+    .unwrap();
+
+  let output = tree.rnm(&["uninstall", VERSION]);
+  assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
+  assert!(
+    text(&output.stderr).contains("is in use"),
+    "{}",
+    text(&output.stderr)
+  );
+  assert!(node.is_file(), "nothing is deleted");
+  assert_eq!(tree.dir().installed_versions().unwrap().len(), 1);
+
+  drop(running);
+  assert_success(&tree.rnm(&["uninstall", VERSION]));
+  assert_eq!(tree.dir().installed_versions().unwrap().len(), 0);
+}
