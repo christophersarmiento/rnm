@@ -35,6 +35,7 @@ use crate::http::{Client, Mirror};
 use crate::multishell::{self, Multishells, Session};
 use crate::nvm_dir::{AliasError, NODE_EXECUTABLE, NvmDir, global_modules_dir, is_executable};
 use crate::remote::{RemoteIndex, load_index, refresh_lts_aliases};
+use crate::shell::{Inferred, ShellKind};
 
 /// What nvm prints for "no version is active".
 pub const NONE_LABEL: &str = "none";
@@ -235,6 +236,32 @@ pub(crate) fn remote_index(ctx: &Context, err: &mut dyn Write) -> Result<RemoteI
     );
   }
   Ok(loaded.index)
+}
+
+/// The calling shell, found in the process tree, for commands whose
+/// `--shell` was omitted.
+///
+/// # Errors
+///
+/// Exit code 1 when the shell is not supported or cannot be found.
+pub fn infer_shell() -> Result<ShellKind, Failure> {
+  match ShellKind::detect() {
+    | Inferred::Supported(shell) => Ok(shell),
+    | Inferred::Unsupported(name) => Err(Failure::new(
+      exit::ERROR,
+      format!(
+        "rnm does not support the '{name}' shell yet; supported shells: {}",
+        ShellKind::names()
+      ),
+    )),
+    | Inferred::Unknown => Err(Failure::new(
+      exit::ERROR,
+      format!(
+        "cannot detect your shell; pass it with --shell ({})",
+        ShellKind::names()
+      ),
+    )),
+  }
 }
 
 /// Writes a line, ignoring broken pipes (`rnm current | head`).

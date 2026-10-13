@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 
 use super::install::Progress;
 use super::use_version::{UseOptions, requested_spec, switch_session};
-use super::{Context, DEFAULT_ALIAS, Failure, exit, say};
+use super::{Context, DEFAULT_ALIAS, Failure, exit, infer_shell, say};
 use crate::multishell::{self, Session};
 use crate::nvm_dir::Resolved;
-use crate::shell::{CdHook, EnvPlan, Inferred, ShellKind};
+use crate::shell::{CdHook, EnvPlan, ShellKind};
 use crate::sys;
 use crate::version::VersionSpec;
 
@@ -172,26 +172,6 @@ fn default_target(ctx: &Context, err: &mut dyn Write) -> Option<PathBuf> {
       say(err, format_args!("rnm: default alias '{target}': {e}"));
       None
     },
-  }
-}
-
-fn infer_shell() -> Result<ShellKind, Failure> {
-  match ShellKind::detect() {
-    | Inferred::Supported(shell) => Ok(shell),
-    | Inferred::Unsupported(name) => Err(Failure::new(
-      exit::ERROR,
-      format!(
-        "rnm does not support the '{name}' shell yet; supported shells: {}",
-        ShellKind::names()
-      ),
-    )),
-    | Inferred::Unknown => Err(Failure::new(
-      exit::ERROR,
-      format!(
-        "cannot detect your shell; pass it with --shell ({})",
-        ShellKind::names()
-      ),
-    )),
   }
 }
 
