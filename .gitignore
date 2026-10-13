@@ -1,2 +1,7 @@
 /target
 /reference/
+
+# Design notes, kept out of the repository for now.
+/docs/research/
+/docs/gitflow.md
+/docs/github/

@@ -17,10 +17,14 @@ env:
 
 jobs:
   lint:
-    name: Lint
-    runs-on: ubuntu-latest
+    name: Lint (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99
         with:
           components: rustfmt, clippy
@@ -34,9 +38,295 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
+        env:
+          RNM_EXPECT_TRANSLATED: "0"
+      # An x64 rnm on an Arm64 machine (Rosetta 2, Prism) must notice the
+      # emulation and install arm64 Node.js.
+      - name: Emulated x64 build
+        if: runner.os == 'macOS' || matrix.os == 'windows-11-arm'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then target=x86_64-apple-darwin; else target=x86_64-pc-windows-msvc; fi
+          rustup target add "$target"
+          cargo test --locked --lib --target "$target" sys::
+        env:
+          RNM_EXPECT_TRANSLATED: "1"
+
+  nvm-compat:
+    name: nvm compatibility (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      NVM_VERSION: v0.40.8
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch nvm
+        run: git clone --quiet --depth 1 --branch "$NVM_VERSION" https://github.com/nvm-sh/nvm.git "$RUNNER_TEMP/nvm"
+      - name: Differential tests
+        run: cargo test --locked --test nvm_compat
+        env:
+          RNM_NVM_SH: ${{ runner.temp }}/nvm/nvm.sh
+
+  shells:
+    name: Shells (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shells: bash,zsh,fish,nu,pwsh
+          - os: macos-latest
+            shells: bash,zsh,fish,nu,pwsh
+          # bash is Git Bash; powershell is Windows PowerShell 5.1.
+          - os: windows-latest
+            shells: bash,nu,pwsh,powershell
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99
+      - uses: Swatinem/rust-cache@v2
+      - name: Install zsh and fish (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh fish
+      - name: Install fish (macOS)
+        if: runner.os == 'macOS'
+        run: brew install fish
+      - name: Install PowerShell (if missing)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          command -v pwsh || { if [ "$RUNNER_OS" = macOS ]; then brew install --cask powershell; else sudo snap install powershell --classic; fi; }
+      - uses: hustcer/setup-nu@v3
+        with:
+          version: "0.116.1"
+      - name: Shell versions
+        shell: bash
+        run: |
+          bash --version | head -1; nu --version
+          pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          if [ "$RUNNER_OS" = Windows ]; then
+            powershell -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          else
+            zsh --version; fish --version
+          fi
+      - name: Build the fake node.exe (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build --locked --example fake_node
+      - name: End-to-end shell tests
+        run: cargo test --locked --test shells
+        env:
+          RNM_REQUIRE_SHELLS: ${{ matrix.shells }}
+
+  # The oldest supported shells (docs/README.md, decision 7). macOS's own
+  # /bin/bash is 3.2; zsh and fish are built from source and cached.
+  shells-minimum:
+    name: Minimum shells (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            shells: bash
+          - os: ubuntu-latest
+            shells: zsh,fish,nu,pwsh
+    env:
+      MIN_ZSH: 5.0.8
+      MIN_FISH: 3.1.2
+      MIN_NU: 0.104.0
+      MIN_PWSH: 7.2.24
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99
+      - uses: Swatinem/rust-cache@v2
+      - name: Use macOS's bash 3.2
+        if: runner.os == 'macOS'
+        run: echo "RNM_SHELL_BASH=/bin/bash" >> "$GITHUB_ENV"
+      # Builds link against the image's ncurses and PCRE2, so the cache keys
+      # include the image (for example ubuntu24).
+      - name: Runner image
+        id: image
+        if: runner.os == 'Linux'
+        run: echo "os=$ImageOS" >> "$GITHUB_OUTPUT"
+      - name: Install build and runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake libncurses-dev libpcre2-dev
+      - name: Cache zsh
+        id: cache-zsh
+        if: runner.os == 'Linux'
+        uses: actions/cache@v6
+        with:
+          path: ~/old-shells/zsh
+          key: zsh-${{ env.MIN_ZSH }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.os }}
+      - name: Build zsh
+        if: runner.os == 'Linux' && steps.cache-zsh.outputs.cache-hit != 'true'
+        run: |
+          src="$RUNNER_TEMP/zsh-src"
+          mkdir -p "$src"
+          curl -fsSL "https://www.zsh.org/pub/old/zsh-$MIN_ZSH.tar.gz" | tar xz -C "$src" --strip-components=1
+          cd "$src"
+          # --without-tcsetpgrp: configure's check needs a terminal. zsh 5.0
+          # predates compilers that reject K&R C and duplicate definitions.
+          ./configure --prefix="$HOME/old-shells/zsh" --without-tcsetpgrp --disable-gdbm \
+            CFLAGS="-O2 -std=gnu89 -fcommon"
+          make -j"$(nproc)"
+          make install.bin install.modules install.fns
+      - name: Cache fish
+        id: cache-fish
+        if: runner.os == 'Linux'
+        uses: actions/cache@v6
+        with:
+          path: ~/old-shells/fish
+          key: fish-${{ env.MIN_FISH }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.os }}
+      # fish finds the system's PCRE2 (libpcre2-dev); its bundled copy needs
+      # CMake < 4.
+      - name: Build fish
+        if: runner.os == 'Linux' && steps.cache-fish.outputs.cache-hit != 'true'
+        run: |
+          src="$RUNNER_TEMP/fish-src"
+          mkdir -p "$src"
+          curl -fsSL "https://github.com/fish-shell/fish-shell/releases/download/$MIN_FISH/fish-$MIN_FISH.tar.gz" \
+            | tar xz -C "$src" --strip-components=1
+          cmake -S "$src" -B "$src/build" -DCMAKE_INSTALL_PREFIX="$HOME/old-shells/fish" \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_DOCS=OFF -DWITH_GETTEXT=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build "$src/build" -j"$(nproc)"
+          cmake --install "$src/build"
+      - name: Install PowerShell 7.2 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          dir="$RUNNER_TEMP/pwsh"
+          mkdir -p "$dir"
+          curl -fsSL "https://github.com/PowerShell/PowerShell/releases/download/v$MIN_PWSH/powershell-$MIN_PWSH-linux-x64.tar.gz" \
+            | tar xz -C "$dir"
+          chmod +x "$dir/pwsh"
+          echo "RNM_SHELL_PWSH=$dir/pwsh" >> "$GITHUB_ENV"
+      - uses: hustcer/setup-nu@v3
+        if: runner.os == 'Linux'
+        with:
+          version: ${{ env.MIN_NU }}
+      - name: Select the old shells (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          {
+            echo "RNM_SHELL_ZSH=$HOME/old-shells/zsh/bin/zsh"
+            echo "RNM_SHELL_FISH=$HOME/old-shells/fish/bin/fish"
+            echo "RNM_SHELL_NU=$(command -v nu)"
+          } >> "$GITHUB_ENV"
+      - name: Shell versions
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            "$RNM_SHELL_BASH" --version | head -1
+          else
+            "$RNM_SHELL_ZSH" --version; "$RNM_SHELL_FISH" --version; "$RNM_SHELL_NU" --version
+            "$RNM_SHELL_PWSH" -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          fi
+      - name: End-to-end shell tests
+        run: cargo test --locked --test shells
+        env:
+          RNM_REQUIRE_SHELLS: ${{ matrix.shells }}
+
+  # install.sh and install.ps1 against a local fake release: download,
+  # checksum, install, profile setup (twice, to check it is idempotent), and
+  # a new shell that loads rnm from the profile.
+  installer:
+    name: Install script (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Install zsh and fish
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then brew install fish; else sudo apt-get update -qq && sudo apt-get install -y -qq zsh fish; fi
+      - name: install.sh
+        if: runner.os != 'Windows'
+        run: |
+          dist="$RUNNER_TEMP/dist"
+          mkdir -p "$dist"
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin; do
+            tar -czf "$dist/rnm-$target.tar.gz" -C target/release rnm
+          done
+          (cd "$dist" && { sha256sum ./*.tar.gz 2>/dev/null || shasum -a 256 ./*.tar.gz; } | sed 's# \./# #' > SHA256SUMS)
+
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          unset XDG_CONFIG_HOME XDG_DATA_HOME ZDOTDIR
+          export RNM_INSTALL_BASE_URL="$dist"
+          for shell in bash zsh fish bash; do SHELL="/bin/$shell" bash install.sh; done
+          if [ "$RUNNER_OS" = macOS ]; then bash_profile="$HOME/.bash_profile"; else bash_profile="$HOME/.bashrc"; fi
+          for file in "$bash_profile" "$HOME/.zshrc" "$HOME/.config/fish/conf.d/rnm.fish"; do
+            count=$(grep -c 'rnm env' "$file")
+            [ "$count" = 1 ] || { echo "::error::$file sets up rnm $count times"; cat "$file"; exit 1; }
+          done
+
+          grep -q '"channel":"stable"' "$HOME/.local/share/rnm/bin/install.json"
+          PATH=/usr/bin:/bin bash -c ". '$bash_profile'; rnm --version; test -n \"\$RNM_MULTISHELL_PATH\""
+          PATH=/usr/bin:/bin zsh -c ". ~/.zshrc; rnm --version; test -n \"\$RNM_MULTISHELL_PATH\""
+          fish -c 'source ~/.config/fish/conf.d/rnm.fish; rnm --version; test -n "$RNM_MULTISHELL_PATH"'
+
+          echo "0000  rnm-x86_64-unknown-linux-musl.tar.gz" > "$dist/SHA256SUMS"
+          echo "0000  rnm-aarch64-unknown-linux-musl.tar.gz" >> "$dist/SHA256SUMS"
+          echo "0000  rnm-x86_64-apple-darwin.tar.gz" >> "$dist/SHA256SUMS"
+          echo "0000  rnm-aarch64-apple-darwin.tar.gz" >> "$dist/SHA256SUMS"
+          if bash install.sh --skip-shell 2>err.txt; then echo "::error::a bad checksum was accepted"; exit 1; fi
+          grep -q 'checksum mismatch' err.txt
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dist = Join-Path $env:RUNNER_TEMP 'dist'
+          New-Item -ItemType Directory -Path $dist | Out-Null
+          $sums = foreach ($target in 'x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc') {
+            $zip = Join-Path $dist "rnm-$target.zip"
+            Compress-Archive -LiteralPath target\release\rnm.exe -DestinationPath $zip
+            "$((Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower())  rnm-$target.zip"
+          }
+          Set-Content -LiteralPath (Join-Path $dist 'SHA256SUMS') -Value $sums
+          $env:RNM_INSTALL_BASE_URL = $dist
+
+          powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+          if ($LASTEXITCODE) { throw 'install.ps1 failed in Windows PowerShell' }
+          pwsh -NoProfile -File install.ps1
+          if ($LASTEXITCODE) { throw 'install.ps1 failed in pwsh' }
+
+          $bin = Join-Path $env:LOCALAPPDATA 'rnm\bin'
+          $userPath = (Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+          if (@($userPath -split ';' | Where-Object { $_ -eq $bin }).Count -ne 1) { throw "user Path: $userPath" }
+          $marker = Get-Content -Raw -LiteralPath (Join-Path $bin 'install.json') | ConvertFrom-Json
+          if ($marker.channel -ne 'stable') { throw "install.json: $marker" }
+          $documents = [Environment]::GetFolderPath('MyDocuments')
+          foreach ($edition in 'WindowsPowerShell', 'PowerShell') {
+            $profilePath = Join-Path $documents "$edition\profile.ps1"
+            $count = @(Select-String -LiteralPath $profilePath -Pattern 'rnm env').Count
+            if ($count -ne 1) { throw "$profilePath sets up rnm $count times" }
+          }
+
+          $env:Path = "$bin;$env:Path"
+          $check = 'rnm --version; if (-not $env:RNM_MULTISHELL_PATH) { exit 1 }'
+          powershell -ExecutionPolicy Bypass -Command $check
+          if ($LASTEXITCODE) { throw 'the Windows PowerShell profile did not load rnm' }
+          pwsh -Command $check
+          if ($LASTEXITCODE) { throw 'the pwsh profile did not load rnm' }
+
+          Set-Content -LiteralPath (Join-Path $dist 'SHA256SUMS') -Value '0000  rnm-x86_64-pc-windows-msvc.zip'
+          pwsh -NoProfile -File install.ps1 -SkipShell
+          if (-not $LASTEXITCODE) { throw 'a bad checksum was accepted' }
+          # The runner fails the step with the last native exit code.
+          exit 0

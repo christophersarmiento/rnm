@@ -1,0 +1,639 @@
+//! `rnm install` and `rnm uninstall` against a local mirror that serves
+//! `index.json`, `SHASUMS256.txt`, and a tiny fake Node.js archive.
+
+mod support;
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::{Arc, Mutex};
+
+use ring::digest;
+use rnm::install::Sha256;
+use rnm::nvm_dir::NvmDir;
+use rnm::platform::Platform;
+use support::{Reply, Seen, serve, unused_port};
+
+const RNM: &str = env!("CARGO_BIN_EXE_rnm");
+
+const TOKEN: &str = "Bearer s3cret";
+
+const VERSION: &str = "v20.0.0";
+
+/// What the fake mirror serves; tests change it between runs.
+#[derive(Clone)]
+struct Mirror {
+  /// The `files` list in `index.json`.
+  files: Vec<String>,
+  /// The archive's bytes and its name.
+  archive: Vec<u8>,
+  archive_name: String,
+  /// The `SHASUMS256.txt` body.
+  shasums: String,
+}
+
+impl Mirror {
+  /// A valid release of `VERSION` for this platform.
+  fn valid() -> Self {
+    let slug = Platform::detect()
+      .unwrap()
+      .artifact(&VERSION.parse().unwrap())
+      .slug;
+    let (archive, extension) = fake_archive(&slug);
+    let archive_name = format!("{slug}.{extension}");
+    let shasums = format!("{}  {archive_name}\n", sha256_hex(&archive));
+    Self {
+      files: Vec::new(),
+      archive,
+      archive_name,
+      shasums,
+    }
+  }
+
+  fn index(&self) -> String {
+    let files: Vec<String> = self.files.iter().map(|f| format!("\"{f}\"")).collect();
+    format!(
+      r#"[{{"version":"{VERSION}","date":"2023-04-18","files":[{}],"lts":false,"security":false}}]"#,
+      files.join(",")
+    )
+  }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+  let mut digest_bytes = [0; 32];
+  digest_bytes.copy_from_slice(digest::digest(&digest::SHA256, bytes).as_ref());
+  Sha256(digest_bytes).to_string()
+}
+
+/// A Node.js-shaped archive: `<slug>/bin/node` (or `<slug>/node.exe` on
+/// Windows) that prints the version.
+///
+/// On unix it also has npm's `npm-cli.js`. Run as `node npm-cli.js …`, the
+/// fake `node` appends its arguments and working directory to
+/// `$FAKE_NPM_LOG` instead of running npm.
+#[cfg(unix)]
+fn fake_archive(slug: &str) -> (Vec<u8>, &'static str) {
+  let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+  let mut builder = tar::Builder::new(encoder);
+  let mut add = |path: String, contents: &str| {
+    let mut header = tar::Header::new_gnu();
+    header.set_size(u64::try_from(contents.len()).unwrap());
+    header.set_mode(0o755);
+    header.set_cksum();
+    builder
+      .append_data(&mut header, path, contents.as_bytes())
+      .unwrap();
+  };
+  add(format!("{slug}/bin/node"), &fake_node_script(VERSION));
+  add(
+    format!("{slug}/lib/node_modules/npm/bin/npm-cli.js"),
+    "// fake\n",
+  );
+  (builder.into_inner().unwrap().finish().unwrap(), "tar.gz")
+}
+
+#[cfg(unix)]
+fn fake_node_script(version: &str) -> String {
+  format!(
+    "#!/bin/sh\ncase \"$1\" in *npm-cli.js) shift; echo \"$* @ $(pwd -P)\" >> \"$FAKE_NPM_LOG\"; exit 0;; esac\necho {version}\n"
+  )
+}
+
+#[cfg(windows)]
+fn fake_archive(slug: &str) -> (Vec<u8>, &'static str) {
+  use std::io::Write as _;
+  let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+  let options =
+    zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+  writer
+    .start_file(format!("{slug}/node.exe"), options)
+    .unwrap();
+  writer.write_all(b"fake").unwrap();
+  (writer.finish().unwrap().into_inner(), "zip")
+}
+
+/// Serves `mirror` (shared, so tests can change it) under `/dist`.
+fn serve_mirror(mirror: &Arc<Mutex<Mirror>>) -> (String, Seen) {
+  let mirror = Arc::clone(mirror);
+  let (base, seen) = serve(move |request| {
+    let mirror = mirror.lock().unwrap().clone();
+    let release = format!("/dist/{VERSION}/");
+    match request.path.as_str() {
+      | "/dist/index.json" => Reply::ok(&mirror.index()),
+      | path if path == format!("{release}SHASUMS256.txt") => Reply::ok(&mirror.shasums),
+      | path if path == format!("{release}{}", mirror.archive_name) => Reply::file(&mirror.archive),
+      | _ => Reply::status(404),
+    }
+  });
+  (format!("{base}/dist"), seen)
+}
+
+struct Tree {
+  _tmp: tempfile::TempDir,
+  root: PathBuf,
+  mirror_url: String,
+}
+
+impl Tree {
+  fn new(mirror_url: &str) -> Self {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("nvm");
+    std::fs::create_dir(&root).unwrap();
+    Self {
+      root,
+      _tmp: tmp,
+      mirror_url: mirror_url.to_owned(),
+    }
+  }
+
+  fn rnm(&self, args: &[&str]) -> Output {
+    self.rnm_with(args, &[])
+  }
+
+  fn rnm_with(&self, args: &[&str], envs: &[(&str, &Path)]) -> Output {
+    let mut command = Command::new(RNM);
+    command.env_clear();
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+      command.env("SystemRoot", system_root);
+    }
+    command
+      .args(args)
+      .env("RNM_DIR", &self.root)
+      .env("NVM_DIR", &self.root)
+      .env("RNM_NODE_MIRROR", &self.mirror_url)
+      .env("RNM_AUTH_HEADER", TOKEN)
+      .env("NVM_INSTALL_LOCK_TIMEOUT", "0")
+      .envs(envs.iter().copied())
+      .current_dir(&self.root)
+      .output()
+      .unwrap()
+  }
+
+  fn dir(&self) -> NvmDir {
+    NvmDir::new(&self.root)
+  }
+
+  fn version_dir(&self) -> PathBuf {
+    self.dir().node_versions_dir().join(VERSION)
+  }
+}
+
+fn text(bytes: &[u8]) -> String {
+  String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Fails the test with rnm's output when `output` did not succeed.
+fn assert_success(output: &Output) {
+  assert!(
+    output.status.success(),
+    "status {:?}\nstdout: {}\nstderr: {}",
+    output.status.code(),
+    text(&output.stdout),
+    text(&output.stderr)
+  );
+}
+
+/// `NVM_DIR` paths are compared after canonicalisation (macOS temp dirs are
+/// behind a `/var` → `/private/var` symlink).
+fn canonical(path: &Path) -> PathBuf {
+  std::fs::canonicalize(path).unwrap()
+}
+
+#[test]
+fn installs_verifies_and_caches() {
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, seen) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+
+  let output = tree.rnm(&["install", "20"]);
+  assert_success(&output);
+  let stdout = text(&output.stdout);
+  assert!(stdout.contains(&format!("Downloading and installing node {VERSION}...")));
+  assert!(
+    stdout.contains(&format!(
+      "Creating default alias: default -> 20 (-> {VERSION})"
+    )),
+    "{stdout}"
+  );
+  assert!(text(&output.stderr).contains("Checksums matched!"));
+
+  let installed = tree.dir().installed_versions().unwrap();
+  assert_eq!(installed.len(), 1);
+  assert_eq!(
+    canonical(&installed[0].path),
+    canonical(&tree.version_dir())
+  );
+  assert_eq!(
+    tree.dir().aliases().get("default").unwrap().as_deref(),
+    Some("20")
+  );
+
+  let archive_name = mirror.lock().unwrap().archive_name.clone();
+  let slug_dir = archive_name
+    .trim_end_matches(".tar.gz")
+    .trim_end_matches(".zip")
+    .to_owned();
+  let cached = tree
+    .dir()
+    .cache_dir()
+    .join("bin")
+    .join(&slug_dir)
+    .join(&archive_name);
+  assert!(cached.is_file(), "{} missing", cached.display());
+  let leftovers: Vec<String> = std::fs::read_dir(tree.dir().node_versions_dir())
+    .unwrap()
+    .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+    .collect();
+  assert_eq!(leftovers, [VERSION]);
+
+  let requests = seen.lock().unwrap();
+  assert!(
+    requests
+      .iter()
+      .all(|request| request.header("authorization") == Some(TOKEN))
+  );
+}
+
+#[test]
+fn exact_installed_version_needs_no_network() {
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, seen) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  assert_success(&tree.rnm(&["install", VERSION]));
+  let requests_after_install = seen.lock().unwrap().len();
+
+  let output = tree.rnm(&["install", "20.0.0"]);
+  assert_success(&output);
+  assert!(text(&output.stderr).contains("is already installed."));
+  assert_eq!(seen.lock().unwrap().len(), requests_after_install);
+}
+
+/// The `--use-on-cd` hook with `--install-if-missing` installs the version
+/// file's version and switches the session to it; without the flag it only
+/// reports the missing version.
+#[test]
+fn use_installs_a_missing_version_on_request() {
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, _seen) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  std::fs::write(tree.root.join(".nvmrc"), "20\n").unwrap();
+  let links = tree.root.join("multishells");
+  std::fs::create_dir(&links).unwrap();
+  let session = links.join("1_2");
+  let envs = [("RNM_MULTISHELL_PATH", session.as_path())];
+
+  let output = tree.rnm_with(&["use", "--from-hook"], &envs);
+  assert_eq!(output.status.code(), Some(3));
+  assert!(text(&output.stderr).contains("rnm install"));
+  assert_eq!(tree.dir().installed_versions().unwrap().len(), 0);
+
+  let output = tree.rnm_with(&["use", "--from-hook", "--install-if-missing"], &envs);
+  assert_success(&output);
+  let stdout = text(&output.stdout);
+  assert!(
+    stdout.contains(&format!("Downloading and installing node {VERSION}...")),
+    "{stdout}"
+  );
+  assert!(
+    stdout.ends_with(&format!("Now using node {VERSION}\n")),
+    "{stdout}"
+  );
+  assert_eq!(
+    canonical(&session),
+    canonical(&tree.version_dir()),
+    "the session link points at the new version"
+  );
+}
+
+/// `--offline` picks among installed and cached versions and unpacks from
+/// the cache; here the mirror is unreachable.
+#[test]
+fn installs_offline_from_the_cache() {
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, _) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  assert_success(&tree.rnm(&["install", VERSION]));
+  assert_success(&tree.rnm(&["uninstall", VERSION]));
+  let unreachable = format!("http://127.0.0.1:{}/dist", unused_port());
+  let offline = |args: &[&str]| {
+    let mut all = vec!["install", "--offline"];
+    all.extend_from_slice(args);
+    tree.rnm_with(&all, &[("RNM_NODE_MIRROR", Path::new(&unreachable))])
+  };
+
+  let output = offline(&["20"]);
+  assert_success(&output);
+  assert!(
+    text(&output.stdout).contains(&format!(
+      "Installing node {VERSION} from the download cache..."
+    )),
+    "{}",
+    text(&output.stdout)
+  );
+  assert!(text(&output.stderr).contains("Using the archive in the cache"));
+  assert_eq!(
+    canonical(&tree.dir().installed_versions().unwrap()[0].path),
+    canonical(&tree.version_dir())
+  );
+
+  let output = offline(&["20"]);
+  assert_success(&output);
+  assert!(text(&output.stderr).contains("is already installed."));
+
+  let output = offline(&["22"]);
+  assert_eq!(output.status.code(), Some(3));
+  assert!(
+    text(&output.stderr).contains("neither installed nor in the download cache"),
+    "{}",
+    text(&output.stderr)
+  );
+}
+
+#[test]
+fn reuses_the_cached_archive() {
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, seen) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  assert_success(&tree.rnm(&["install", "20"]));
+  assert_success(&tree.rnm(&["uninstall", "20"]));
+  assert!(!tree.version_dir().exists());
+
+  let output = tree.rnm(&["install", "20"]);
+  assert_success(&output);
+  assert!(text(&output.stderr).contains("Using the verified archive in the cache"));
+  let archive_name = mirror.lock().unwrap().archive_name.clone();
+  let downloads = seen
+    .lock()
+    .unwrap()
+    .iter()
+    .filter(|request| request.path.ends_with(&archive_name))
+    .count();
+  assert_eq!(downloads, 1);
+}
+
+#[test]
+fn refuses_unverified_or_missing_binaries() {
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, _) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+
+  let good_shasums = mirror.lock().unwrap().shasums.clone();
+  let tampered = format!("{}{}", "0".repeat(64), &good_shasums[64..]);
+  mirror.lock().unwrap().shasums = tampered;
+  let output = tree.rnm(&["install", "20"]);
+  assert_eq!(output.status.code(), Some(1));
+  assert!(
+    text(&output.stderr).contains("checksum mismatch"),
+    "{}",
+    text(&output.stderr)
+  );
+  assert!(!tree.version_dir().exists());
+  assert_eq!(tree.dir().installed_versions().unwrap().len(), 0);
+
+  mirror.lock().unwrap().shasums = "0000  other-file.tar.gz\n".to_owned();
+  let output = tree.rnm(&["install", "20"]);
+  assert_eq!(output.status.code(), Some(1));
+  assert!(
+    text(&output.stderr).contains("refusing to install an unverified download"),
+    "{}",
+    text(&output.stderr)
+  );
+
+  let mut wrong_platform = Mirror::valid();
+  wrong_platform.files = vec!["sunos-x86".to_owned()];
+  *mirror.lock().unwrap() = wrong_platform;
+  let output = tree.rnm(&["install", "20"]);
+  assert_eq!(output.status.code(), Some(1));
+  assert!(
+    text(&output.stderr).contains("has no prebuilt binary for this platform"),
+    "{}",
+    text(&output.stderr)
+  );
+
+  let output = tree.rnm(&["install", "21"]);
+  assert_eq!(output.status.code(), Some(3));
+  assert!(text(&output.stderr).contains("Version '21' not found"));
+}
+
+#[test]
+fn uninstall_removes_exact_aliases_only() {
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, _) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  assert_success(&tree.rnm(&["install", VERSION, "--alias=pinned"]));
+  let aliases = tree.dir().aliases();
+  aliases.set("bare", "20.0.0").unwrap();
+  aliases.set("partial", "20").unwrap();
+  aliases.set("rc", "v20.0.0-rc.1").unwrap();
+
+  let output = tree.rnm(&["uninstall", "20"]);
+  assert_success(&output);
+  let stdout = text(&output.stdout);
+  assert!(
+    stdout.contains(&format!("Uninstalled node {VERSION}")),
+    "{stdout}"
+  );
+  let remaining: Vec<String> = aliases
+    .list(false)
+    .unwrap()
+    .into_iter()
+    .map(|(name, _)| name)
+    .collect();
+  assert_eq!(remaining, ["partial", "rc"]);
+
+  let output = tree.rnm(&["uninstall", "20"]);
+  assert_success(&output);
+  assert!(text(&output.stderr).contains("Version '20' is not installed."));
+}
+
+/// Windows cannot move a directory while a program holds one of its files
+/// open, as a running `node.exe` does. Uninstall then fails without deleting
+/// anything, and works once the file is closed.
+#[cfg(windows)]
+#[test]
+fn uninstall_reports_a_version_in_use() {
+  use std::os::windows::fs::OpenOptionsExt;
+  /// Others may read the file, but not delete or rename it.
+  const FILE_SHARE_READ: u32 = 1;
+
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, _) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  assert_success(&tree.rnm(&["install", VERSION]));
+  let node = tree.version_dir().join("node.exe");
+  let running = std::fs::OpenOptions::new()
+    .read(true)
+    .share_mode(FILE_SHARE_READ)
+    .open(&node)
+    .unwrap();
+
+  let output = tree.rnm(&["uninstall", VERSION]);
+  assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
+  assert!(
+    text(&output.stderr).contains("is in use"),
+    "{}",
+    text(&output.stderr)
+  );
+  assert!(node.is_file(), "nothing is deleted");
+  assert_eq!(tree.dir().installed_versions().unwrap().len(), 1);
+
+  drop(running);
+  assert_success(&tree.rnm(&["uninstall", VERSION]));
+  assert_eq!(tree.dir().installed_versions().unwrap().len(), 0);
+}
+
+/// Mirrors from `config.toml` are tried in order: an unreachable main
+/// mirror falls back for the index, and a mirror that lacks the archive
+/// falls back for the download.
+#[test]
+fn falls_back_to_the_next_mirror() {
+  let good = Arc::new(Mutex::new(Mirror::valid()));
+  let (good_url, good_seen) = serve_mirror(&good);
+  let mut incomplete = Mirror::valid();
+  incomplete.archive_name = "missing.tar.gz".to_owned();
+  let (incomplete_url, _) = serve_mirror(&Arc::new(Mutex::new(incomplete)));
+  let unreachable = format!("http://127.0.0.1:{}/dist", unused_port());
+
+  let tree = Tree::new(&unreachable);
+  let config = tree.root.join("config.toml");
+  std::fs::write(
+    &config,
+    format!("[mirror]\nfallback = [\"{incomplete_url}\", \"{good_url}\"]\n"),
+  )
+  .unwrap();
+  let output = tree.rnm_with(&["install", "20"], &[("RNM_CONFIG", &config)]);
+  assert_success(&output);
+  let stderr = text(&output.stderr);
+  assert_eq!(
+    stderr.matches("trying the next mirror").count(),
+    2,
+    "{stderr}"
+  );
+  assert!(tree.version_dir().exists());
+  let archive_path = format!("/dist/{VERSION}/{}", good.lock().unwrap().archive_name);
+  assert!(
+    good_seen
+      .lock()
+      .unwrap()
+      .iter()
+      .any(|request| request.path == archive_path)
+  );
+}
+
+#[test]
+fn reports_an_invalid_config_file() {
+  let tree = Tree::new("https://unused.invalid/dist");
+  let config = tree.root.join("config.toml");
+  std::fs::write(&config, "[mirror]\nurls = []\n").unwrap();
+  let output = tree.rnm_with(&["ls"], &[("RNM_CONFIG", &config)]);
+  assert_eq!(output.status.code(), Some(1));
+  let stderr = text(&output.stderr);
+  assert!(stderr.contains("config.toml"), "{stderr}");
+  assert!(stderr.contains("urls"), "{stderr}");
+}
+
+/// With `RNM_RESOLVE_ENGINES`, `package.json` names the version; the
+/// `default` alias gets the resolved version, because nvm cannot read an
+/// npm range.
+#[test]
+fn installs_the_range_from_package_json_on_request() {
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, _) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  std::fs::write(
+    tree.root.join("package.json"),
+    r#"{"devEngines":{"runtime":{"name":"node","version":">=19 <21"}}}"#,
+  )
+  .unwrap();
+
+  let output = tree.rnm(&["install"]);
+  assert_eq!(output.status.code(), Some(127), "package.json is opt-in");
+
+  let output = tree.rnm_with(&["install"], &[("RNM_RESOLVE_ENGINES", Path::new("1"))]);
+  assert_success(&output);
+  let stdout = text(&output.stdout);
+  assert!(stdout.contains("with version <>=19 <21>"), "{stdout}");
+  assert_eq!(
+    std::fs::read_to_string(tree.root.join("alias").join("default")).unwrap(),
+    format!("{VERSION}\n")
+  );
+}
+
+/// `--latest-npm`, `default-packages`, and `--reinstall-packages-from` run
+/// the new version's npm, in nvm's order.
+#[cfg(unix)]
+#[test]
+fn runs_npm_for_packages() {
+  use std::os::unix::fs::PermissionsExt;
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, _) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  let log = tree.root.join("npm.log");
+  std::fs::write(
+    tree.root.join("default-packages"),
+    "# tools\ntypescript\n@scope/tool@2\n",
+  )
+  .unwrap();
+
+  let output = tree.rnm_with(
+    &["install", "20", "--latest-npm"],
+    &[("FAKE_NPM_LOG", &log)],
+  );
+  assert_success(&output);
+  let stdout = text(&output.stdout);
+  assert!(stdout.contains("npm v9.x is the last version"), "{stdout}");
+  assert!(
+    stdout.contains("Installing default global packages from"),
+    "{stdout}"
+  );
+  let logged = std::fs::read_to_string(&log).unwrap();
+  let lines: Vec<&str> = logged
+    .lines()
+    .map(|l| l.split(" @ ").next().unwrap())
+    .collect();
+  assert_eq!(
+    lines,
+    [
+      "install -g --quiet npm@9",
+      "install -g --quiet typescript @scope/tool@2"
+    ]
+  );
+
+  // An older version with one registry package and one linked package.
+  let old = tree.dir().node_versions_dir().join("v18.0.0");
+  let node = old.join("bin").join("node");
+  std::fs::create_dir_all(node.parent().unwrap()).unwrap();
+  std::fs::write(&node, fake_node_script("v18.0.0")).unwrap();
+  std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+  let modules = old.join("lib").join("node_modules");
+  std::fs::create_dir_all(modules.join("left-pad")).unwrap();
+  std::fs::write(
+    modules.join("left-pad").join("package.json"),
+    r#"{"name":"left-pad","version":"1.3.0"}"#,
+  )
+  .unwrap();
+  let linked = tree.root.join("my-cli");
+  std::fs::create_dir_all(&linked).unwrap();
+  std::os::unix::fs::symlink(&linked, modules.join("my-cli")).unwrap();
+
+  std::fs::remove_file(&log).unwrap();
+  let output = tree.rnm_with(
+    &[
+      "install",
+      "20",
+      "--reinstall-packages-from=18",
+      "--skip-default-packages",
+    ],
+    &[("FAKE_NPM_LOG", &log)],
+  );
+  assert_success(&output);
+  let logged = std::fs::read_to_string(&log).unwrap();
+  let lines: Vec<&str> = logged.lines().collect();
+  assert_eq!(lines.len(), 2, "{logged}");
+  assert!(lines[0].starts_with("install -g --quiet left-pad@1.3.0 @ "));
+  assert_eq!(lines[1], format!("link @ {}", canonical(&linked).display()));
+
+  let output = tree.rnm(&["install", "20", "--reinstall-packages-from=20"]);
+  assert_eq!(output.status.code(), Some(4), "{}", text(&output.stderr));
+  let output = tree.rnm(&["install", "20", "--copy-packages-from=16"]);
+  assert_eq!(output.status.code(), Some(5), "{}", text(&output.stderr));
+}

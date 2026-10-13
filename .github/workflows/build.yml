@@ -1,0 +1,109 @@
+name: Build
+
+# Release binaries for every target platform. Called by the nightly and
+# release workflows; also runs on pull requests that change the build, as a
+# dry run that publishes nothing.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit to build.
+        type: string
+        required: true
+      version:
+        description: What `rnm --version` prints.
+        type: string
+        required: true
+  pull_request:
+    paths:
+      - .github/workflows/build.yml
+      - .github/workflows/nightly.yml
+      - .github/workflows/release.yml
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Static musl binaries, cross-compiled with zig: they run on any
+          # Linux distribution.
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, zig: true, runs_on_host: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, zig: true }
+          - { target: aarch64-apple-darwin, os: macos-latest, runs_on_host: true }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, runs_on_host: true }
+          - { target: aarch64-pc-windows-msvc, os: windows-latest }
+    env:
+      RNM_BUILD_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@1.99
+      # In the checkout, so the target goes to rust-toolchain.toml's toolchain.
+      - run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@v2
+        if: matrix.zig
+      - uses: taiki-e/install-action@v2
+        if: matrix.zig
+        with:
+          tool: cargo-zigbuild
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.zig }}" = true ]; then build=zigbuild; else build=build; fi
+          cargo "$build" --release --locked --target "${{ matrix.target }}"
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          name="rnm-${{ matrix.target }}"
+          release="target/${{ matrix.target }}/release"
+          mkdir -p dist staging
+          cp LICENSE staging/
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "$release/rnm.exe" staging/
+            archive="$name.zip"
+            (cd staging && 7z a -bso0 "../dist/$archive" rnm.exe LICENSE)
+            echo "binary=staging/rnm.exe" >> "$GITHUB_OUTPUT"
+          else
+            cp "$release/rnm" staging/
+            archive="$name.tar.gz"
+            tar -czf "dist/$archive" -C staging rnm LICENSE
+            echo "binary=staging/rnm" >> "$GITHUB_OUTPUT"
+          fi
+          cd dist
+          if command -v sha256sum >/dev/null; then hash=$(sha256sum "$archive"); else hash=$(shasum -a 256 "$archive"); fi
+          # Plain `<hash>  <name>`: Windows' sha256sum would mark binary mode with `*`.
+          echo "${hash%% *}  $archive" > "$archive.sha256"
+          cat "$archive.sha256"
+          ls -l
+      - name: Smoke test
+        if: matrix.runs_on_host
+        shell: bash
+        run: |
+          printed=$("${{ steps.package.outputs.binary }}" --version | tr -d '\r')
+          expected="rnm ${RNM_BUILD_VERSION:-$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)}"
+          echo "$printed"
+          [ "$printed" = "$expected" ] || { echo "expected '$expected'"; exit 1; }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rnm-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
