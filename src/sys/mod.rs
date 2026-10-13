@@ -1,5 +1,5 @@
 //! Small, dependency-light platform helpers: process ancestry, liveness,
-//! and binary translation.
+//! binary translation, and (on Windows) registry reads.
 //!
 //! No subprocesses and no `sysinfo`: Linux reads `/proc`, macOS calls
 //! `proc_pidinfo`, Windows takes one Toolhelp snapshot. Other unix systems
@@ -14,6 +14,8 @@ mod windows;
 use unix as imp;
 #[cfg(windows)]
 use windows as imp;
+#[cfg(windows)]
+pub use windows::{Hive, registry_string};
 
 /// One process in the ancestry chain.
 #[derive(Clone, Debug, PartialEq, Eq)]

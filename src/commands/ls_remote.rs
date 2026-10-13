@@ -25,6 +25,20 @@ pub struct LsRemoteOptions {
   pub no_colors: bool,
   /// Whether `out` is a terminal; colors are only used there.
   pub terminal: bool,
+  /// `--sort` (fnm): the listing order.
+  pub order: Order,
+  /// `--latest` (fnm): list only the newest matching version.
+  pub latest_only: bool,
+}
+
+/// The order of `ls-remote`'s listing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Order {
+  /// Oldest first, as nvm prints.
+  #[default]
+  Ascending,
+  /// Newest first.
+  Descending,
 }
 
 /// Which releases to list.
@@ -64,9 +78,15 @@ pub fn ls_remote(
   };
   let filter = Filter::new(opts).map_err(|e| not_available(out, e.to_string()))?;
   let index = remote_index(ctx, err)?;
-  let rows = filter
+  let mut rows = filter
     .select(&index)
     .map_err(|message| not_available(out, message))?;
+  if opts.latest_only {
+    rows.drain(..rows.len().saturating_sub(1));
+  }
+  if opts.order == Order::Descending {
+    rows.reverse();
+  }
   if rows.is_empty() {
     return Err(not_available(out, String::new()));
   }

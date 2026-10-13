@@ -114,9 +114,24 @@ impl NvmDir {
   /// See [`ResolveError`].
   pub fn resolve(&self, spec: &VersionSpec) -> Result<Resolved, ResolveError> {
     let installed = self.installed_versions().map_err(ResolveError::Io)?;
+    self.resolve_among(spec, &installed)
+  }
+
+  /// [`NvmDir::resolve`], choosing among `candidates` instead of the
+  /// installed versions (for example installed plus cached versions for
+  /// `install --offline`). Aliases still come from this tree.
+  ///
+  /// # Errors
+  ///
+  /// See [`ResolveError`].
+  pub fn resolve_among(
+    &self,
+    spec: &VersionSpec,
+    candidates: &[InstalledVersion],
+  ) -> Result<Resolved, ResolveError> {
     Resolver {
       dir: self,
-      installed: &installed,
+      installed: candidates,
       chain: Vec::new(),
     }
     .resolve(spec)

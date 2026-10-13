@@ -57,6 +57,28 @@ fn stderr(output: &Output) -> String {
   String::from_utf8(output.stderr.clone()).unwrap()
 }
 
+/// fnm's `list-remote` flags: `--filter`, `--sort`, `--latest`.
+#[test]
+fn accepts_fnm_flags() {
+  let tmp = tempfile::tempdir().unwrap();
+  let (mirror, _) = mirror();
+  let lines = |args: &[&str]| {
+    let output = rnm(tmp.path(), &mirror, args);
+    assert!(output.status.success(), "{args:?}: {}", stderr(&output));
+    stdout(&output)
+      .lines()
+      .map(|line| line.split_whitespace().next().unwrap().to_owned())
+      .collect::<Vec<_>>()
+  };
+  assert_eq!(lines(&["--filter", "22"]), ["v22.19.0", "v22.20.0"]);
+  assert_eq!(lines(&["--sort", "desc", "22"]), ["v22.20.0", "v22.19.0"]);
+  assert_eq!(lines(&["--latest"]), ["v24.9.0"]);
+  assert_eq!(lines(&["--latest", "--lts"]), ["v22.20.0"]);
+  assert_eq!(lines(&["--latest", "--sort=desc", "20"]), ["v20.19.5"]);
+  let both = rnm(tmp.path(), &mirror, &["--filter", "22", "20"]);
+  assert_eq!(both.status.code(), Some(2), "VERSION and --filter conflict");
+}
+
 #[test]
 fn lists_versions_like_nvm() {
   let tmp = tempfile::tempdir().unwrap();

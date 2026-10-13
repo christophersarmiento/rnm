@@ -5,8 +5,8 @@ use std::io::Write;
 use super::use_version::version_file;
 use super::{Context, DEFAULT_ALIAS, Failure, UseOptions, exit, remote_index, say, use_version};
 use crate::http::{Client, Mirror};
-use crate::install::{Event, Installer, LockSettings};
-use crate::nvm_dir::{Flavor, InstalledVersion};
+use crate::install::{Event, Installer, LockSettings, cached_versions, install_from_cache};
+use crate::nvm_dir::{Flavor, InstalledVersion, Resolved};
 use crate::platform::Platform;
 use crate::remote::{Release, RemoteResolveError};
 use crate::version::{LTS_PREFIX, VersionFileKind, VersionReq, VersionSpec};
@@ -19,6 +19,10 @@ const PER_MILLE: u64 = 1000;
 
 /// Options for [`install`].
 #[derive(Clone, Debug, Default)]
+#[allow(
+  clippy::struct_excessive_bools,
+  reason = "each bool is one command-line flag"
+)]
 pub struct InstallOptions {
   /// The version spec. When `None` (and no `--lts`), the nearest version
   /// file is used.
@@ -36,6 +40,9 @@ pub struct InstallOptions {
   /// Whether to draw a download progress bar. `NVM_NO_PROGRESS` turns it
   /// off as well.
   pub progress: Progress,
+  /// `--offline`: choose among installed and cached versions, and install
+  /// from the download cache without network access.
+  pub offline: bool,
 }
 
 /// Download progress output.
@@ -74,6 +81,7 @@ pub fn install(
       say(err, format_args!("{installed} is already installed."));
       installed
     },
+    | None if opts.offline => install_offline(ctx, &requested, &spec, out, err)?,
     | None => {
       let index = remote_index(ctx, err)?;
       let release = index
@@ -118,6 +126,71 @@ fn requested_spec(
     ),
   );
   Ok(file.version)
+}
+
+/// nvm's `--offline`: the newest installed or cached version that matches,
+/// installed from the cache if needed. Aliases such as `lts/*` resolve
+/// through their alias files, as they do for `use`.
+fn install_offline(
+  ctx: &Context,
+  requested: &str,
+  spec: &VersionSpec,
+  out: &mut dyn Write,
+  err: &mut dyn Write,
+) -> Result<InstalledVersion, Failure> {
+  let failure = |e: &dyn std::fmt::Display| Failure::new(exit::ERROR, e.to_string());
+  let platform = Platform::detect().map_err(|e| failure(&e))?;
+  let mut candidates = ctx.nvm_dir.installed_versions()?;
+  for version in cached_versions(&ctx.nvm_dir, &platform) {
+    let already_listed = candidates
+      .iter()
+      .any(|c| c.flavor == Flavor::Node && c.version == version);
+    if !already_listed {
+      candidates.push(InstalledVersion {
+        flavor: Flavor::Node,
+        path: ctx.nvm_dir.version_dir(Flavor::Node, &version),
+        version,
+      });
+    }
+  }
+  candidates.sort_by(|a, b| a.version.cmp(&b.version));
+  let not_available = || {
+    Failure::new(
+      exit::NOT_AVAILABLE,
+      format!(
+        "Version '{requested}' is neither installed nor in the download cache; \
+         run without --offline to download it."
+      ),
+    )
+  };
+  let Ok(Resolved::Installed(chosen)) = ctx.nvm_dir.resolve_among(spec, &candidates) else {
+    return Err(not_available());
+  };
+  if let Some(installed) = ctx.nvm_dir.installed_at(&chosen.path) {
+    say(err, format_args!("{installed} is already installed."));
+    return Ok(installed);
+  }
+  say(
+    out,
+    format_args!(
+      "Installing node {} from the download cache...",
+      chosen.version
+    ),
+  );
+  let mut reporter = Reporter {
+    err,
+    version: chosen.version.to_string(),
+    draws_progress: false,
+    drawn_per_mille: None,
+  };
+  install_from_cache(
+    &ctx.nvm_dir,
+    &platform,
+    &LockSettings::from_env(|key| ctx.var_string(key)),
+    &chosen.version,
+    &mut |event| reporter.report(&event),
+  )
+  .map_err(|e| failure(&e))
 }
 
 fn installed_exact_version(ctx: &Context, spec: &VersionSpec) -> Option<InstalledVersion> {
@@ -193,6 +266,13 @@ impl Reporter<'_> {
         ),
       ),
       | Event::ChecksumMatched => say(self.err, "Checksums matched!"),
+      | Event::UsingCachedOffline { path } => say(
+        self.err,
+        format_args!(
+          "Using the archive in the cache (verified when it was downloaded): {}",
+          path.display()
+        ),
+      ),
     }
   }
 

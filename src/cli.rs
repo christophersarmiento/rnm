@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand};
 use std::io::IsTerminal;
 
 use rnm::commands::{
-  EnvOptions, ExecOptions, InstallOptions, LsOptions, LsRemoteOptions, Progress, UseOptions,
+  EnvOptions, ExecOptions, InstallOptions, LsOptions, LsRemoteOptions, Order, Progress, UseOptions,
 };
 use rnm::shell::{CdHook, ShellKind};
 use rnm::version::LATEST_LTS;
@@ -95,6 +95,14 @@ pub enum Command {
   /// `rnm exec 20 node app.js`. Without a version, uses the nearest .nvmrc
   /// or .node-version.
   Exec(ExecArgs),
+
+  /// Check the setup and explain what to fix.
+  ///
+  /// Checks the install directory, this shell's setup and PATH order, the
+  /// default alias, npm's prefix setting, other version managers, the
+  /// mirror and its credentials (one request), and on Windows the
+  /// PowerShell execution policy. Exits 1 when a check fails.
+  Doctor,
 
   /// Print a shell completion script for rnm.
   ///
@@ -197,6 +205,10 @@ pub struct InstallArgs {
   /// Do not draw a download progress bar.
   #[arg(long)]
   pub no_progress: bool,
+  /// Use no network: pick among installed and cached versions, and install
+  /// from the download cache.
+  #[arg(long)]
+  pub offline: bool,
   /// nvm's "binary only" flag. rnm always installs binaries, so it has no
   /// effect.
   #[arg(short = 'b', hide = true)]
@@ -241,6 +253,15 @@ pub struct LsRemoteArgs {
   /// lts/<name>.
   #[arg(value_name = "VERSION")]
   pub pattern: Option<String>,
+  /// The same as VERSION (fnm's spelling).
+  #[arg(long, value_name = "VERSION", conflicts_with = "pattern")]
+  pub filter: Option<String>,
+  /// The listing order: oldest first (asc, nvm's order) or newest first.
+  #[arg(long, value_enum, default_value_t = SortOrder::Asc)]
+  pub sort: SortOrder,
+  /// Only the newest matching version.
+  #[arg(long)]
+  pub latest: bool,
   /// Only LTS versions, or one LTS line with --lts=<name>.
   #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = LATEST_LTS, value_name = "NAME")]
   pub lts: Option<String>,
@@ -296,6 +317,7 @@ impl From<InstallArgs> for InstallOptions {
       save: args.save,
       no_use: args.no_use,
       progress: progress(args.no_progress),
+      offline: args.offline,
     }
   }
 }
@@ -311,10 +333,24 @@ impl From<LsArgs> for LsOptions {
   }
 }
 
+/// `ls-remote --sort` values, fnm's names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum SortOrder {
+  /// Oldest first.
+  Asc,
+  /// Newest first.
+  Desc,
+}
+
 impl From<LsRemoteArgs> for LsRemoteOptions {
   fn from(args: LsRemoteArgs) -> Self {
     Self {
-      pattern: args.pattern,
+      pattern: args.pattern.or(args.filter),
+      order: match args.sort {
+        | SortOrder::Asc => Order::Ascending,
+        | SortOrder::Desc => Order::Descending,
+      },
+      latest_only: args.latest,
       lts: args.lts,
       no_colors: args.no_colors,
       terminal: std::io::stdout().is_terminal(),
