@@ -107,6 +107,9 @@ jobs:
           else
             zsh --version; fish --version
           fi
+      - name: Build the fake node.exe (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build --locked --example fake_node
       - name: End-to-end shell tests
         run: cargo test --locked --test shells
         env:

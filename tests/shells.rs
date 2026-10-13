@@ -226,20 +226,31 @@ impl Fixture {
   }
 }
 
-/// A `node` in `bin` that prints `version`: a shell script on unix. On
-/// Windows, `node.cmd` for PowerShell and Nushell, plus the same shell script
-/// for Git Bash (which ignores `PATHEXT`).
+/// A `node` in `bin` that prints `version`. On unix, a shell script. On
+/// Windows, rnm only counts a version with a `node.exe`, so it is a copy of
+/// the `fake_node` example, which prints its directory's name.
 fn fake_node(bin: &Path, version: &str) {
   std::fs::create_dir_all(bin).unwrap();
-  let script = bin.join("node");
-  std::fs::write(&script, format!("#!/bin/sh\necho {version}\n")).unwrap();
   #[cfg(unix)]
   {
     use std::os::unix::fs::PermissionsExt;
+    let script = bin.join("node");
+    std::fs::write(&script, format!("#!/bin/sh\necho {version}\n")).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
   }
   #[cfg(windows)]
-  std::fs::write(bin.join("node.cmd"), format!("@echo {version}\r\n")).unwrap();
+  {
+    assert_eq!(bin.file_name().unwrap(), version);
+    let fake = Path::new(RNM)
+      .with_file_name("examples")
+      .join("fake_node.exe");
+    std::fs::copy(&fake, bin.join("node.exe")).unwrap_or_else(|e| {
+      panic!(
+        "{}: {e} (build it with `cargo build --example fake_node`)",
+        fake.display()
+      )
+    });
+  }
 }
 
 /// The setup line, then node / use / node / current, per shell.
