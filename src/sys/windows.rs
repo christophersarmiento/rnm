@@ -5,10 +5,13 @@
 use std::collections::HashMap;
 
 use windows_sys::Win32::Foundation::{
-  CloseHandle, ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE, STILL_ACTIVE,
+  CloseHandle, ERROR_ACCESS_DENIED, ERROR_SUCCESS, INVALID_HANDLE_VALUE, STILL_ACTIVE,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
   CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
+use windows_sys::Win32::System::Registry::{
+  HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW,
 };
 use windows_sys::Win32::System::SystemInformation::{IMAGE_FILE_MACHINE, IMAGE_FILE_MACHINE_ARM64};
 use windows_sys::Win32::System::Threading::{
@@ -122,4 +125,61 @@ pub fn is_translated() -> bool {
     )
   };
   ok != 0 && native_machine == IMAGE_FILE_MACHINE_ARM64 && !cfg!(target_arch = "aarch64")
+}
+
+/// A registry hive for [`registry_string`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hive {
+  CurrentUser,
+  LocalMachine,
+}
+
+/// The `REG_SZ` value `name` under `subkey`, or `None` when the key or value
+/// is missing or not a string.
+pub fn registry_string(hive: Hive, subkey: &str, name: &str) -> Option<String> {
+  let root = match hive {
+    | Hive::CurrentUser => HKEY_CURRENT_USER,
+    | Hive::LocalMachine => HKEY_LOCAL_MACHINE,
+  };
+  let subkey = wide(subkey);
+  let name = wide(name);
+  let mut size = 0u32;
+  // SAFETY: both strings are NUL-terminated; a null buffer asks for the
+  // size in bytes, including the terminating NUL.
+  let status = unsafe {
+    RegGetValueW(
+      root,
+      subkey.as_ptr(),
+      name.as_ptr(),
+      RRF_RT_REG_SZ,
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+      &raw mut size,
+    )
+  };
+  if status != ERROR_SUCCESS {
+    return None;
+  }
+  let mut buffer = vec![0u16; usize::try_from(size).ok()?.div_ceil(2)];
+  // SAFETY: `buffer` holds `size` bytes, as `size` tells the call.
+  let status = unsafe {
+    RegGetValueW(
+      root,
+      subkey.as_ptr(),
+      name.as_ptr(),
+      RRF_RT_REG_SZ,
+      std::ptr::null_mut(),
+      buffer.as_mut_ptr().cast(),
+      &raw mut size,
+    )
+  };
+  if status != ERROR_SUCCESS {
+    return None;
+  }
+  let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+  Some(String::from_utf16_lossy(&buffer[..len]))
+}
+
+fn wide(text: &str) -> Vec<u16> {
+  text.encode_utf16().chain(std::iter::once(0)).collect()
 }
