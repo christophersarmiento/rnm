@@ -59,6 +59,9 @@ pub enum Event<'a> {
   UsingCached { path: &'a Path },
   /// The archive matched its SHA-256 from `SHASUMS256.txt`.
   ChecksumMatched,
+  /// `--offline`: unpacking an archive from the cache without checking it
+  /// against `SHASUMS256.txt` again.
+  UsingCachedOffline { path: &'a Path },
 }
 
 /// Why an install failed.
@@ -89,6 +92,11 @@ pub enum InstallError {
   Url(InvalidUrl),
   Http(HttpError),
   Lock(LockError),
+  /// `--offline`: the cache has no archive of this version for this
+  /// platform.
+  NotCached {
+    version: Version,
+  },
   /// A running program has files open in the directory (Windows only; unix
   /// lets a directory move while its files are open).
   InUse {
@@ -137,6 +145,10 @@ impl fmt::Display for InstallError {
       | Self::Url(e) => e.fmt(f),
       | Self::Http(e) => e.fmt(f),
       | Self::Lock(e) => e.fmt(f),
+      | Self::NotCached { version } => write!(
+        f,
+        "node {version} is not in the download cache, and --offline allows no download"
+      ),
       | Self::InUse { path, source } => write!(
         f,
         "{} is in use ({source}); close the programs that run it, such as node, npm, or an \
@@ -228,14 +240,8 @@ impl Installer<'_> {
 
     let chosen = self.choose_archive(version, &artifact)?;
     let archive = self.fetch_archive(&artifact, &chosen, events)?;
-    self.unpack_into_place(&chosen, &archive, &version_dir)?;
-    self
-      .nvm_dir
-      .installed_at(&version_dir)
-      .ok_or_else(|| InstallError::BadArchive {
-        path: archive,
-        reason: "the installed node binary is not usable".to_owned(),
-      })
+    unpack_into_place(self.nvm_dir, chosen.kind, &archive, &version_dir)?;
+    installed_from(self.nvm_dir, &version_dir, archive)
   }
 
   fn choose_archive(&self, version: &Version, artifact: &Artifact) -> Result<Chosen, InstallError> {
@@ -336,48 +342,129 @@ impl Installer<'_> {
     events(Event::ChecksumMatched);
     Ok(())
   }
+}
 
-  /// Unpacks next to `version_dir` and renames the archive's single
-  /// top-level directory into place, replacing a broken earlier install.
-  fn unpack_into_place(
-    &self,
-    chosen: &Chosen,
-    archive: &Path,
-    version_dir: &Path,
-  ) -> Result<(), InstallError> {
-    let parent = version_dir.parent().unwrap_or(self.nvm_dir.root());
-    std::fs::create_dir_all(parent).map_err(io_error(parent))?;
-    let name = version_dir
-      .file_name()
-      .map(|name| name.to_string_lossy().into_owned())
-      .unwrap_or_default();
-    remove_leftovers(parent, &format!("{STAGING_PREFIX}{name}-"));
-    let staging = parent.join(format!("{STAGING_PREFIX}{name}-{}", std::process::id()));
-    std::fs::create_dir(&staging).map_err(io_error(&staging))?;
-
-    let result = archive::unpack(chosen.kind, archive, &staging)
-      .map_err(|e| InstallError::BadArchive {
-        path: archive.to_path_buf(),
-        reason: with_causes(&e),
-      })
-      .and_then(|()| single_top_dir(&staging, archive))
-      .and_then(|top| {
-        if !crate::nvm_dir::is_executable(&node_binary(&top)) {
-          return Err(InstallError::BadArchive {
-            path: archive.to_path_buf(),
-            reason: format!("no node binary at {}", node_binary(&top).display()),
-          });
-        }
-        if version_dir.exists() {
-          // Files that cannot be deleted yet stay behind under a hidden
-          // name; a later removal deletes them.
-          let _ = remove_dir_safely(version_dir)?;
-        }
-        std::fs::rename(&top, version_dir).map_err(io_error(version_dir))
-      });
-    let _ = std::fs::remove_dir_all(&staging);
-    result
+/// Installs `version` from an archive already in the download cache, with
+/// no network access (`install --offline`). Cache entries were verified
+/// against `SHASUMS256.txt` when they were downloaded; that is not repeated.
+///
+/// # Errors
+///
+/// [`InstallError::NotCached`] when the cache has no archive of `version`
+/// for `platform`; otherwise lock, unpack, and file system errors.
+pub fn install_from_cache(
+  nvm_dir: &NvmDir,
+  platform: &Platform,
+  lock: &LockSettings,
+  version: &Version,
+  events: &mut dyn FnMut(Event<'_>),
+) -> Result<InstalledVersion, InstallError> {
+  let (kind, archive) =
+    cached_archive(nvm_dir, platform, version).ok_or_else(|| InstallError::NotCached {
+      version: version.clone(),
+    })?;
+  let locks_dir = nvm_dir.cache_dir().join("locks");
+  let _lock = InstallLock::acquire(&locks_dir, &version.to_string(), lock, || {
+    events(Event::WaitingForLock);
+  })?;
+  let version_dir = nvm_dir.version_dir(Flavor::Node, version);
+  if let Some(installed) = nvm_dir.installed_at(&version_dir) {
+    return Ok(installed);
   }
+  events(Event::UsingCachedOffline { path: &archive });
+  unpack_into_place(nvm_dir, kind, &archive, &version_dir)?;
+  installed_from(nvm_dir, &version_dir, archive)
+}
+
+/// The versions with an archive for `platform` in the download cache
+/// (`.cache/bin/<slug>/<slug>.<ext>`, shared with nvm).
+#[must_use]
+pub fn cached_versions(nvm_dir: &NvmDir, platform: &Platform) -> Vec<Version> {
+  let Ok(entries) = std::fs::read_dir(nvm_dir.cache_dir().join("bin")) else {
+    return Vec::new();
+  };
+  let os_infix = format!("-{}-", platform.os.dist_name());
+  entries
+    .flatten()
+    .filter_map(|entry| {
+      let slug = entry.file_name().to_string_lossy().into_owned();
+      let (version, _) = slug.strip_prefix("node-")?.split_once(&os_infix)?;
+      let version: Version = version.parse().ok()?;
+      let fits_platform = platform.artifact(&version).slug == slug;
+      (fits_platform && cached_archive(nvm_dir, platform, &version).is_some()).then_some(version)
+    })
+    .collect()
+}
+
+/// The cached archive of `version` for `platform`, in rnm's preferred
+/// format order.
+fn cached_archive(
+  nvm_dir: &NvmDir,
+  platform: &Platform,
+  version: &Version,
+) -> Option<(ArchiveKind, PathBuf)> {
+  let slug = platform.artifact(version).slug;
+  let dir = nvm_dir.cache_dir().join("bin").join(&slug);
+  ArchiveKind::preferred().iter().find_map(|kind| {
+    let path = dir.join(format!("{slug}.{}", kind.extension()));
+    path.is_file().then_some((*kind, path))
+  })
+}
+
+/// The install at `version_dir` after unpacking `archive` there.
+fn installed_from(
+  nvm_dir: &NvmDir,
+  version_dir: &Path,
+  archive: PathBuf,
+) -> Result<InstalledVersion, InstallError> {
+  nvm_dir
+    .installed_at(version_dir)
+    .ok_or_else(|| InstallError::BadArchive {
+      path: archive,
+      reason: "the installed node binary is not usable".to_owned(),
+    })
+}
+
+/// Unpacks next to `version_dir` and renames the archive's single top-level
+/// directory into place, replacing a broken earlier install.
+fn unpack_into_place(
+  nvm_dir: &NvmDir,
+  kind: ArchiveKind,
+  archive: &Path,
+  version_dir: &Path,
+) -> Result<(), InstallError> {
+  let parent = version_dir.parent().unwrap_or(nvm_dir.root());
+  std::fs::create_dir_all(parent).map_err(io_error(parent))?;
+  let name = version_dir
+    .file_name()
+    .map(|name| name.to_string_lossy().into_owned())
+    .unwrap_or_default();
+  remove_leftovers(parent, &format!("{STAGING_PREFIX}{name}-"));
+  let staging = parent.join(format!("{STAGING_PREFIX}{name}-{}", std::process::id()));
+  std::fs::create_dir(&staging).map_err(io_error(&staging))?;
+
+  let result = archive::unpack(kind, archive, &staging)
+    .map_err(|e| InstallError::BadArchive {
+      path: archive.to_path_buf(),
+      reason: with_causes(&e),
+    })
+    .and_then(|()| single_top_dir(&staging, archive))
+    .and_then(|top| {
+      if !crate::nvm_dir::is_executable(&node_binary(&top)) {
+        return Err(InstallError::BadArchive {
+          path: archive.to_path_buf(),
+          reason: format!("no node binary at {}", node_binary(&top).display()),
+        });
+      }
+      if version_dir.exists() {
+        // Files that cannot be deleted yet stay behind under a hidden
+        // name; a later removal deletes them.
+        let _ = remove_dir_safely(version_dir)?;
+      }
+      std::fs::rename(&top, version_dir).map_err(io_error(version_dir))
+    });
+  let _ = std::fs::remove_dir_all(&staging);
+  result
 }
 
 /// What [`remove_dir_safely`] managed to delete.
@@ -601,6 +688,38 @@ mod tests {
       .map(|e| e.unwrap().path())
       .collect();
     assert_eq!(left, [in_progress], "only the live removal stays");
+  }
+
+  /// Finds archives for this platform only, including nvm's darwin x64
+  /// fallback before Node.js 16.
+  #[cfg(unix)]
+  #[test]
+  fn lists_cached_versions_for_the_platform() {
+    let tmp = tempfile::tempdir().unwrap();
+    let nvm_dir = NvmDir::new(tmp.path());
+    let cache = |slug: &str, extension: Option<&str>| {
+      let dir = nvm_dir.cache_dir().join("bin").join(slug);
+      std::fs::create_dir_all(&dir).unwrap();
+      if let Some(extension) = extension {
+        std::fs::write(dir.join(format!("{slug}.{extension}")), "").unwrap();
+      }
+    };
+    cache("node-v20.0.0-darwin-arm64", Some("tar.gz"));
+    cache("node-v14.0.0-darwin-x64", Some("tar.xz"));
+    cache("node-v22.0.0-darwin-x64", Some("tar.xz"));
+    cache("node-v20.0.0-linux-x64", Some("tar.xz"));
+    cache("node-v18.0.0-darwin-arm64", None);
+    let mac = Platform {
+      os: crate::platform::Os::Darwin,
+      arch: "arm64",
+      musl: false,
+    };
+    let mut found: Vec<String> = cached_versions(&nvm_dir, &mac)
+      .iter()
+      .map(ToString::to_string)
+      .collect();
+    found.sort();
+    assert_eq!(found, ["v14.0.0", "v20.0.0"]);
   }
 
   /// No process has this PID: PIDs are far below it on every OS rnm runs on.

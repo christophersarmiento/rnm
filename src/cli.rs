@@ -197,6 +197,10 @@ pub struct InstallArgs {
   /// Do not draw a download progress bar.
   #[arg(long)]
   pub no_progress: bool,
+  /// Use no network: pick among installed and cached versions, and install
+  /// from the download cache.
+  #[arg(long)]
+  pub offline: bool,
   /// nvm's "binary only" flag. rnm always installs binaries, so it has no
   /// effect.
   #[arg(short = 'b', hide = true)]
@@ -305,6 +309,7 @@ impl From<InstallArgs> for InstallOptions {
       save: args.save,
       no_use: args.no_use,
       progress: progress(args.no_progress),
+      offline: args.offline,
     }
   }
 }

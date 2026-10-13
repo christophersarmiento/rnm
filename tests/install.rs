@@ -11,7 +11,7 @@ use ring::digest;
 use rnm::install::Sha256;
 use rnm::nvm_dir::NvmDir;
 use rnm::platform::Platform;
-use support::{Reply, Seen, serve};
+use support::{Reply, Seen, serve, unused_port};
 
 const RNM: &str = env!("CARGO_BIN_EXE_rnm");
 
@@ -284,6 +284,50 @@ fn use_installs_a_missing_version_on_request() {
     canonical(&session),
     canonical(&tree.version_dir()),
     "the session link points at the new version"
+  );
+}
+
+/// `--offline` picks among installed and cached versions and unpacks from
+/// the cache; here the mirror is unreachable.
+#[test]
+fn installs_offline_from_the_cache() {
+  let mirror = Arc::new(Mutex::new(Mirror::valid()));
+  let (url, _) = serve_mirror(&mirror);
+  let tree = Tree::new(&url);
+  assert_success(&tree.rnm(&["install", VERSION]));
+  assert_success(&tree.rnm(&["uninstall", VERSION]));
+  let unreachable = format!("http://127.0.0.1:{}/dist", unused_port());
+  let offline = |args: &[&str]| {
+    let mut all = vec!["install", "--offline"];
+    all.extend_from_slice(args);
+    tree.rnm_with(&all, &[("RNM_NODE_MIRROR", Path::new(&unreachable))])
+  };
+
+  let output = offline(&["20"]);
+  assert_success(&output);
+  assert!(
+    text(&output.stdout).contains(&format!(
+      "Installing node {VERSION} from the download cache..."
+    )),
+    "{}",
+    text(&output.stdout)
+  );
+  assert!(text(&output.stderr).contains("Using the archive in the cache"));
+  assert_eq!(
+    canonical(&tree.dir().installed_versions().unwrap()[0].path),
+    canonical(&tree.version_dir())
+  );
+
+  let output = offline(&["20"]);
+  assert_success(&output);
+  assert!(text(&output.stderr).contains("is already installed."));
+
+  let output = offline(&["22"]);
+  assert_eq!(output.status.code(), Some(3));
+  assert!(
+    text(&output.stderr).contains("neither installed nor in the download cache"),
+    "{}",
+    text(&output.stderr)
   );
 }
 
