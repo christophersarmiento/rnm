@@ -8,6 +8,7 @@ use super::{Context, DEFAULT_ALIAS, Failure, SYSTEM_LABEL, exit, npm_version, sa
 use crate::multishell::{Session, Target};
 use crate::nvm_dir::{InstalledVersion, ResolveError, Resolved};
 use crate::shell::{Inferred, ShellKind};
+use crate::style::{self, Stream};
 use crate::version::{LTS_PREFIX, VersionFile, VersionFileKind, VersionSpec, find_version_file};
 
 /// Options for [`use_version`].
@@ -181,7 +182,7 @@ pub(crate) fn switch_session(
   let silent_if_unchanged = opts.silent_if_unchanged || opts.from_hook;
   let quiet = opts.silent || (silent_if_unchanged && switched.unchanged);
   if !quiet {
-    say(out, &switched.message);
+    say(out, style::success(Stream::Out, &switched.message));
   }
   if opts.save {
     std::fs::write(

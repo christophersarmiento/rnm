@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use super::{Context, Failure, exit, network, say};
 use crate::http::{Client, HttpError, Url};
 use crate::install::{ArchiveKind, find_checksum, sha256_of, unpack};
+use crate::style::{self, Stream};
 use crate::version::Version;
 
 /// The GitHub repository that publishes releases.
@@ -208,7 +209,10 @@ pub fn self_update(
   let installed = replace_binary(&releases, &release, &exe)?;
   let new_marker = InstallMarker { channel, ..marker };
   write_marker(&install_dir, &new_marker)?;
-  say(out, format_args!("Updated to {installed}."));
+  say(
+    out,
+    style::success(Stream::Out, format_args!("Updated to {installed}.")),
+  );
   Ok(())
 }
 

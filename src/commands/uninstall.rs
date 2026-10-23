@@ -6,6 +6,7 @@ use super::current::active;
 use super::{Context, Failure, exit, say};
 use crate::install::{InstallLock, LockSettings, Removal, remove_dir_safely};
 use crate::nvm_dir::{Flavor, InstalledVersion, ResolveError, Resolved};
+use crate::style::{self, Spinner, Stream};
 use crate::version::{LTS_PREFIX, VersionSpec};
 
 /// Removes the version that `spec` (or `--lts[=name]`) resolves to locally,
@@ -76,8 +77,10 @@ pub fn uninstall(
     );
   })
   .map_err(|e| Failure::new(exit::ERROR, e.to_string()))?;
-  let removal =
-    remove_dir_safely(&installed.path).map_err(|e| Failure::new(exit::ERROR, e.to_string()))?;
+  let spinner = Spinner::start(format!("Removing {installed}..."));
+  let removal = remove_dir_safely(&installed.path);
+  drop(spinner);
+  let removal = removal.map_err(|e| Failure::new(exit::ERROR, e.to_string()))?;
   if let Removal::Partial { leftover, source } = removal {
     say(
       err,
@@ -90,10 +93,13 @@ pub fn uninstall(
   }
   say(
     out,
-    format_args!(
-      "Uninstalled {} {}",
-      flavor_name(&installed),
-      installed.version
+    style::success(
+      Stream::Out,
+      format_args!(
+        "Uninstalled {} {}",
+        flavor_name(&installed),
+        installed.version
+      ),
     ),
   );
   remove_aliases_to(ctx, &installed, out)

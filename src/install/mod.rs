@@ -64,6 +64,8 @@ pub enum Event<'a> {
   UsingCachedOffline { path: &'a Path },
   /// A mirror failed, so the next one is tried.
   TryingNextMirror { error: String },
+  /// Unpacking the verified archive into the install tree.
+  Unpacking,
 }
 
 /// Why an install failed.
@@ -261,6 +263,7 @@ impl Installer<'_> {
     }
 
     let (kind, archive) = self.fetch_from_mirrors(version, &artifact, events)?;
+    events(Event::Unpacking);
     unpack_into_place(self.nvm_dir, kind, &archive, &version_dir)?;
     installed_from(self.nvm_dir, &version_dir, archive)
   }
@@ -427,6 +430,7 @@ pub fn install_from_cache(
     return Ok(installed);
   }
   events(Event::UsingCachedOffline { path: &archive });
+  events(Event::Unpacking);
   unpack_into_place(nvm_dir, kind, &archive, &version_dir)?;
   installed_from(nvm_dir, &version_dir, archive)
 }

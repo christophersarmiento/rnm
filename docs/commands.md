@@ -33,7 +33,7 @@ An exact version that is already installed needs no network.
 | `--latest-npm` | Upgrade npm to the newest version that works with this Node.js. |
 | `--skip-default-packages` | Do not install the packages from the [`default-packages`](configuration.md#default-packages) file. |
 | `--reinstall-packages-from=VERSION` | Reinstall the global npm packages of another installed version (or `system`). Also `--copy-packages-from=`. |
-| `--no-progress` | No progress bar. Also `NVM_NO_PROGRESS=1`. |
+| `--no-progress` | No progress bar or spinner. Also `NVM_NO_PROGRESS=1`. |
 
 Like nvm, aliases keep what you typed: `rnm install 22 --default` stores `22`, so `default` follows new 22.x releases as you install them. A range from `package.json` is the exception: it is stored as the version it resolved to, because nvm cannot read ranges.
 

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use super::{Context, DEFAULT_ALIAS, Failure, alias, exit, say};
 use crate::nvm_dir::Resolved;
+use crate::style;
 use crate::version::VersionSpec;
 
 /// The name of the persistent link in the install root.
@@ -91,11 +92,11 @@ pub(crate) fn refresh_persistent_default(ctx: &Context, err: &mut dyn Write) {
   if let Err(failure) = result {
     say(
       err,
-      format_args!(
+      style::warning(format_args!(
         "warning: cannot update {}: {}",
         link.display(),
         failure.message
-      ),
+      )),
     );
   }
 }

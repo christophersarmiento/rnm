@@ -15,6 +15,7 @@ use crate::cli::{Cli, Command, ImportSource};
 
 fn main() -> ExitCode {
   let cli = Cli::parse();
+  rnm::style::init();
   let Some(command) = cli.command else {
     // No subcommand: print help, like nvm.
     let _ = Cli::command().print_help();
@@ -24,7 +25,7 @@ fn main() -> ExitCode {
     | Ok(()) => ExitCode::SUCCESS,
     | Err(failure) => {
       if !failure.message.is_empty() {
-        let _ = writeln!(std::io::stderr(), "{}", failure.message);
+        let _ = writeln!(std::io::stderr(), "{}", rnm::style::error(&failure.message));
       }
       ExitCode::from(failure.code)
     },
