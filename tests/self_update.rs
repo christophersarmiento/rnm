@@ -124,16 +124,27 @@ impl Install {
 
   fn rnm(&self, args: &[&str]) -> Output {
     let root = self.bin.parent().unwrap();
-    Command::new(self.bin.join("rnm"))
+    let mut command = Command::new(self.bin.join("rnm"));
+    command
       .env_clear()
       .args(args)
       .env("HOME", root)
       .env("RNM_DIR", root.join("nvm"))
       .env("RNM_GITHUB_API_URL", &self.base)
       .env("RNM_GITHUB_URL", &self.base)
-      .current_dir(root)
-      .output()
-      .unwrap()
+      .current_dir(root);
+    // On Linux, a child forked by a parallel test can briefly inherit the
+    // write handle of this freshly copied binary, so exec fails with
+    // ETXTBSY until that child execs. Retry for a moment.
+    for _ in 0..50 {
+      match command.output() {
+        | Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+          std::thread::sleep(std::time::Duration::from_millis(20));
+        },
+        | result => return result.unwrap(),
+      }
+    }
+    command.output().unwrap()
   }
 
   fn version(&self) -> String {
