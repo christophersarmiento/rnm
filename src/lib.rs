@@ -19,5 +19,6 @@ pub mod nvm_dir;
 pub mod platform;
 pub mod remote;
 pub mod shell;
+pub mod style;
 pub mod sys;
 pub mod version;

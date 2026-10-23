@@ -125,7 +125,7 @@ fn use_version_file(ctx: &Context, session: &Session, hook: &UseOptions, err: &m
   });
   let _ = err.write_all(&messages);
   if let Err(failure) = result {
-    say(err, failure.message);
+    say(err, crate::style::error(&failure.message));
   }
 }
 

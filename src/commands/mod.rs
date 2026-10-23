@@ -48,6 +48,7 @@ use crate::nvm_dir::{AliasError, NODE_EXECUTABLE, NvmDir, global_modules_dir, is
 use crate::platform::Platform;
 use crate::remote::{RemoteIndex, load_index, refresh_lts_aliases};
 use crate::shell::{Inferred, ShellKind};
+use crate::style::{self, Spinner};
 use crate::version::VersionFileKind;
 
 /// Turn on `package.json` as a version file, highest precedence first.
@@ -267,7 +268,7 @@ pub(crate) fn network(ctx: &Context, err: &mut dyn Write) -> Result<Network, Fai
   let network = Network::from_settings(&ctx.config, |key| ctx.var(key), needs_unofficial_builds)
     .map_err(|e| Failure::new(exit::ERROR, e.to_string()))?;
   for warning in &network.warnings {
-    say(err, warning);
+    say(err, style::warning(warning));
   }
   Ok(network)
 }
@@ -297,15 +298,18 @@ impl Remote {
 /// loaded.
 pub(crate) fn remote_index(ctx: &Context, err: &mut dyn Write) -> Result<Remote, Failure> {
   let network = network(ctx, err)?;
+  let spinner = Spinner::start("Fetching the Node.js version list...");
   let loaded = load_index(&network.client, &network.mirrors, &ctx.nvm_dir.cache_dir())
-    .map_err(|e| Failure::new(exit::ERROR, e.to_string()))?;
+    .map_err(|e| Failure::new(exit::ERROR, e.to_string()));
+  drop(spinner);
+  let loaded = loaded?;
   for warning in &loaded.warnings {
-    say(err, warning);
+    say(err, style::warning(warning));
   }
   if let Err(e) = refresh_lts_aliases(&ctx.nvm_dir.aliases(), &loaded.index) {
     say(
       err,
-      format_args!("warning: cannot update the LTS aliases: {e}"),
+      style::warning(format_args!("warning: cannot update the LTS aliases: {e}")),
     );
   }
   Ok(Remote {

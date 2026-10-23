@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use super::{Context, DEFAULT_ALIAS, Failure, exit, say};
 use crate::nvm_dir::{Flavor, is_executable, node_binary};
+use crate::style;
 use crate::version::{Version, VersionSpec, looks_like_range};
 
 /// How imported versions get into rnm's tree.
@@ -289,7 +290,9 @@ fn import_aliases(
     if !usable {
       say(
         err,
-        format_args!("warning: skipped the nvm-windows alias {name}={target}"),
+        style::warning(format_args!(
+          "warning: skipped the nvm-windows alias {name}={target}"
+        )),
       );
       continue;
     }
