@@ -219,7 +219,8 @@ npm-check-updates@17
 | `NVM_SYMLINK_CURRENT` | `true`: keep `<install dir>/current` pointing at the active version (macOS and Linux), as nvm does. |
 | `NVM_INSTALL_LOCK_TIMEOUT` | Seconds to wait for another install of the same version. Default: 600. |
 | `NVM_INSTALL_LOCK_STALE` | Minutes after which an abandoned install lock is taken over. Default: never. |
-| `NVM_NO_PROGRESS` | Any value: no download progress bar. |
+| `NVM_NO_PROGRESS` | Any value: no download progress bar or install spinner. |
+| `NO_COLOR` | Any value: no colors or status symbols. Output that is not a terminal never has them. |
 | `NVM_COLORS` | Five color letters for `ls`, as in nvm (default `bygre`). |
 | `TERM=dumb` | No colors. |
 | `RNM_GITHUB_URL`, `RNM_GITHUB_API_URL` | Where `self-update` and `doctor` look for rnm releases. Default: `https://github.com` and `https://api.github.com` (for a GitHub Enterprise mirror). |
