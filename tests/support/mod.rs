@@ -118,14 +118,13 @@ fn spawn(
   (base, seen, handle)
 }
 
-/// A port nothing listens on.
+/// A port nothing listens on. Port 1 is outside every OS's ephemeral
+/// range (and privileged on Unix), so no test server bound to port 0 can
+/// take it, unlike a port freed after `bind("127.0.0.1:0")`, which a
+/// parallel test may receive next.
 #[must_use]
 pub fn unused_port() -> u16 {
-  TcpListener::bind("127.0.0.1:0")
-    .unwrap()
-    .local_addr()
-    .unwrap()
-    .port()
+  1
 }
 
 fn read_request(stream: &TcpStream) -> Request {
