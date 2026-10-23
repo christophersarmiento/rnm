@@ -10,6 +10,7 @@ use crate::nvm_dir::{NODE_EXECUTABLE, Resolved, is_executable};
 use crate::platform::Platform;
 use crate::remote::load_index;
 use crate::shell::{Inferred, ShellKind};
+use crate::style::{self, Stream};
 use crate::version::VersionSpec;
 
 /// How a check turned out.
@@ -77,23 +78,88 @@ pub fn doctor(ctx: &Context, out: &mut dyn Write) -> Result<(), Failure> {
   findings.push(execution_policy());
   findings.retain(|finding| !finding.message.is_empty());
 
+  let pretty = style::enabled(Stream::Out);
+  let topic_width = findings.iter().map(|f| f.topic.len()).max().unwrap_or(0);
   for finding in &findings {
-    say(
-      out,
-      format_args!(
-        "{:<STATUS_WIDTH$}  {}: {}",
-        finding.status, finding.topic, finding.message
-      ),
-    );
+    if pretty {
+      say(
+        out,
+        format_args!(
+          "  {}  {}  {}",
+          status_symbol(finding.status),
+          style::paint(
+            Stream::Out,
+            style::BOLD,
+            format_args!("{:<topic_width$}", finding.topic)
+          ),
+          highlight_commands(&finding.message)
+        ),
+      );
+    } else {
+      say(
+        out,
+        format_args!(
+          "{:<STATUS_WIDTH$}  {}: {}",
+          finding.status, finding.topic, finding.message
+        ),
+      );
+    }
   }
   let count = |status| findings.iter().filter(|f| f.status == status).count();
   let (failures, warnings) = (count(Status::Fail), count(Status::Warn));
   say(out, "");
-  say(out, summary(failures, warnings));
+  let summary = summary(failures, warnings);
+  if pretty {
+    let worst = findings
+      .iter()
+      .map(|f| f.status)
+      .max()
+      .unwrap_or(Status::Ok);
+    let (color, _) = status_style(worst);
+    say(
+      out,
+      format_args!(
+        "  {} {}",
+        status_symbol(worst),
+        style::paint(Stream::Out, color, summary)
+      ),
+    );
+  } else {
+    say(out, summary);
+  }
   if failures > 0 {
     return Err(Failure::new(exit::ERROR, ""));
   }
   Ok(())
+}
+
+/// The color and symbol of a status, for terminals.
+fn status_style(status: Status) -> (&'static str, &'static str) {
+  match status {
+    | Status::Ok => (style::GREEN, "✓"),
+    | Status::Warn => (style::YELLOW, "⚠"),
+    | Status::Fail => (style::RED, "✗"),
+  }
+}
+
+fn status_symbol(status: Status) -> String {
+  let (color, symbol) = status_style(status);
+  style::paint(Stream::Out, color, symbol)
+}
+
+/// Colors the `commands` that findings quote in backticks.
+fn highlight_commands(message: &str) -> String {
+  message
+    .split('`')
+    .enumerate()
+    .map(|(i, part)| {
+      if i % 2 == 1 {
+        style::paint(Stream::Out, style::CYAN, part)
+      } else {
+        part.to_owned()
+      }
+    })
+    .collect()
 }
 
 fn summary(failures: usize, warnings: usize) -> String {
@@ -430,6 +496,15 @@ fn execution_policy() -> Finding {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn highlights_quoted_commands() {
+    // Without colors the backticks are dropped; with colors they are cyan.
+    assert_eq!(
+      highlight_commands("set one with `rnm alias default <version>`"),
+      "set one with rnm alias default <version>"
+    );
+  }
 
   #[test]
   fn reads_npmrc_prefix() {
