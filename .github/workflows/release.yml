@@ -1,8 +1,10 @@
 name: Release
 
 # Publishes a GitHub release for a `vX.Y.Z` tag on `main`. The release notes
-# are the body of the tagged commit, which is the squashed release PR
-# (`chore(release): vX.Y.Z`) and carries the changelog.
+# are the body of the annotated tag's message (everything after its
+# `vX.Y.Z` subject line). Tag with `--cleanup=verbatim`, or git drops the
+# Markdown headings as comments:
+#   git tag -a vX.Y.Z --cleanup=verbatim -F notes.md origin/main
 
 on:
   push:
@@ -65,7 +67,13 @@ jobs:
           cat SHA256SUMS
       - name: Create the release
         run: |
-          git log -1 --format=%b "$GITHUB_SHA" > notes.md
+          # checkout may leave the tag lightweight, so fetch the tag object.
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          if [ "$(git cat-file -t "$GITHUB_REF_NAME")" = tag ]; then
+            git for-each-ref --format='%(contents:body)' "refs/tags/$GITHUB_REF_NAME" > notes.md
+          else
+            : > notes.md
+          fi
           if [ -s notes.md ]; then notes=(--notes-file notes.md); else notes=(--generate-notes); fi
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
