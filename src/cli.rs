@@ -2,6 +2,7 @@
 //!
 //! Subcommands use nvm's names first; fnm's names are accepted as aliases.
 
+use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Args, Parser, Subcommand};
 use std::io::IsTerminal;
 
@@ -12,8 +13,25 @@ use rnm::commands::{
 use rnm::shell::{CdHook, ShellKind};
 use rnm::version::LATEST_LTS;
 
+/// Help colors, as cargo's. clap drops them when stdout is not a terminal
+/// or `NO_COLOR` is set.
+const STYLES: Styles = Styles::styled()
+  .header(AnsiColor::Green.on_default().effects(Effects::BOLD))
+  .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
+  .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
+  .placeholder(AnsiColor::Cyan.on_default())
+  .error(AnsiColor::Red.on_default().effects(Effects::BOLD))
+  .valid(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
+  .invalid(AnsiColor::Yellow.on_default().effects(Effects::BOLD));
+
 #[derive(Debug, Parser)]
-#[command(name = "rnm", version = rnm::VERSION, about, propagate_version = true)]
+#[command(
+  name = "rnm",
+  version = rnm::VERSION,
+  about,
+  propagate_version = true,
+  styles = STYLES
+)]
 pub struct Cli {
   #[command(subcommand)]
   pub command: Option<Command>,
